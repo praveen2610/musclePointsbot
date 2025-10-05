@@ -1,30 +1,63 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder } from 'discord.js';
+import {
+  Client, GatewayIntentBits, Partials, REST, Routes,
+  SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder
+} from 'discord.js';
 import Database from 'better-sqlite3';
 
-// ---------- Config ----------
-const APP_ID = process.env.APPLICATION_ID;                       // 1424263853327388785
-const TOKEN  = process.env.DISCORD_TOKEN;
-const DEV_GUILD_ID = process.env.DEV_GUILD_ID;                   // register guild commands (fast)
+/* =========================
+   CONFIG & CONSTANTS
+========================= */
+const APP_ID       = (process.env.APPLICATION_ID  || '').trim();
+const TOKEN        = (process.env.DISCORD_TOKEN   || '').trim();
+const DEV_GUILD_ID = (process.env.DEV_GUILD_ID    || '').trim();
+const DB_FILE      = (process.env.DB_PATH         || 'points.db').trim();
 
-// Default cooldowns (ms)
-const COOLDOWNS = {
-  gym:        12 * 60 * 60 * 1000, // 12h
+const COOLDOWNS = { // ms
+  gym:        12 * 60 * 60 * 1000,
   badminton:  12 * 60 * 60 * 1000,
   cricket:    12 * 60 * 60 * 1000,
   exercise:    6 * 60 * 60 * 1000
 };
+const POINTS = { gym: 2, badminton: 5, cricket: 5, exercise: 1 };
 
-// Points per activity
-const POINTS = {
-  gym: 2,
-  badminton: 5,
-  cricket: 5,
-  exercise: 1
-};
+const SUCCESS_MESSAGES = [
+  "🔥 On fire! Keep crushing it!",
+  "💪 Beast mode activated!",
+  "⚡ Lightning fast progress!",
+  "🚀 To the moon and back!",
+  "👑 Absolute legend status!",
+  "🌟 Star performer right here!",
+  "💎 Diamond dedication!",
+  "🎯 Bullseye! Perfect form!",
+  "🦾 Unstoppable force!",
+  "🏆 Champion mindset!"
+];
 
-// ---------- Database ----------
-const db = new Database('points.db');
+const RANKS = [
+  { min: 0,    name: "🆕 Rookie",   color: 0x95a5a6, next: 20  },
+  { min: 20,   name: "🌟 Beginner", color: 0x3498db, next: 50  },
+  { min: 50,   name: "💪 Athlete",  color: 0x9b59b6, next: 100 },
+  { min: 100,  name: "🥉 Pro",      color: 0xf39c12, next: 200 },
+  { min: 200,  name: "🥈 Expert",   color: 0xe67e22, next: 350 },
+  { min: 350,  name: "🥇 Champion", color: 0xf1c40f, next: 500 },
+  { min: 500,  name: "🏆 Legend",   color: 0xe74c3c, next: 1000},
+  { min: 1000, name: "👑 Godlike",  color: 0x8e44ad, next: null}
+];
+
+const WEEKLY_CHALLENGES = [
+  { id: 'gym_warrior', name: '💪 Gym Warrior',   target: 'gym',         goal: 15, reward: 25, emoji: '💪', rewardCat: 'gym' },
+  { id: 'cardio_king', name: '🏃 Cardio King',   target: 'exercise',    goal: 25, reward: 20, emoji: '🏃', rewardCat: 'exercise' },
+  { id: 'sport_star',  name: '🏸 Sport Star',    target: 'total_sports',goal: 30, reward: 30, emoji: '🏸', rewardCat: 'exercise' },
+  { id: 'all_rounder', name: '🌟 All-Rounder',   target: 'total',       goal: 60, reward: 35, emoji: '🌟', rewardCat: 'exercise' }
+];
+
+const MEDAL = (pos) => pos===1 ? "🥇" : pos===2 ? "🥈" : pos===3 ? "🥉" : "🏃";
+
+/* =========================
+   DB & SCHEMA
+========================= */
+const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 
 db.prepare(`
@@ -62,150 +95,251 @@ db.prepare(`
   )
 `).run();
 
-// Helpers
+/* Streaks & Achievements */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS streaks (
+    guild_id TEXT,
+    user_id TEXT,
+    category TEXT,
+    current_streak INTEGER DEFAULT 0,
+    longest_streak INTEGER DEFAULT 0,
+    last_activity_date TEXT,
+    PRIMARY KEY (guild_id, user_id, category)
+  )
+`).run();
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS achievements (
+    guild_id TEXT,
+    user_id TEXT,
+    achievement_id TEXT,
+    unlocked_at INTEGER,
+    PRIMARY KEY (guild_id, user_id, achievement_id)
+  )
+`).run();
+
+/* Historical log for period leaderboards & weekly challenges */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS points_log (
+    guild_id TEXT, user_id TEXT, category TEXT, amount INTEGER, ts INTEGER
+  )
+`).run();
+
+/* Weekly challenge claim dedupe */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS challenge_claims (
+    guild_id TEXT, user_id TEXT, challenge_id TEXT, week_start TEXT, claimed_at INTEGER,
+    PRIMARY KEY (guild_id, user_id, challenge_id, week_start)
+  )
+`).run();
+
+/* Reminders & Buddy */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS reminders (
+    guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER, every_hours INTEGER
+  )
+`).run();
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS buddies (
+    guild_id TEXT, user_id TEXT PRIMARY KEY, buddy_id TEXT
+  )
+`).run();
+
+/* SQUADS */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS squads (
+    squad_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+`).run();
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS squad_members (
+    guild_id TEXT NOT NULL,
+    squad_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    joined_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id),
+    FOREIGN KEY (squad_id) REFERENCES squads(squad_id) ON DELETE CASCADE
+  )
+`).run();
+
+/* Prepared statements */
 const upsertUser = db.prepare(`
   INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id)
   ON CONFLICT(guild_id, user_id) DO NOTHING
 `);
-
 const addPointsStmt = db.prepare(`
   UPDATE points
   SET total = total + @add,
-      ${/* category column is dynamic; we build query at runtime */''}
-      gym      = CASE WHEN @category = 'gym' THEN gym + @add ELSE gym END,
-      badminton= CASE WHEN @category = 'badminton' THEN badminton + @add ELSE badminton END,
-      cricket  = CASE WHEN @category = 'cricket' THEN cricket + @add ELSE cricket END,
-      exercise = CASE WHEN @category = 'exercise' THEN exercise + @add ELSE exercise END
+      gym       = CASE WHEN @category = 'gym' THEN gym + @add ELSE gym END,
+      badminton = CASE WHEN @category = 'badminton' THEN badminton + @add ELSE badminton END,
+      cricket   = CASE WHEN @category = 'cricket' THEN cricket + @add ELSE cricket END,
+      exercise  = CASE WHEN @category = 'exercise' THEN exercise + @add ELSE exercise END
   WHERE guild_id = @guild_id AND user_id = @user_id
 `);
-
-const getUserStmt = db.prepare(`SELECT * FROM points WHERE guild_id=? AND user_id=?`);
-
-const setCooldownStmt = db.prepare(`
+const getUserStmt      = db.prepare(`SELECT * FROM points WHERE guild_id=? AND user_id=?`);
+const setCooldownStmt  = db.prepare(`
   INSERT INTO cooldowns (guild_id, user_id, category, last_ms)
   VALUES (@guild_id, @user_id, @category, @last_ms)
   ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms=excluded.last_ms
 `);
-
-const getCooldownStmt = db.prepare(`
-  SELECT last_ms FROM cooldowns WHERE guild_id=? AND user_id=? AND category=?
-`);
-
-const upsertConfig = db.prepare(`
+const getCooldownStmt  = db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id=? AND user_id=? AND category=?`);
+const upsertConfig     = db.prepare(`
   INSERT INTO guild_config (guild_id, checkins_channel_id, audit_channel_id,
     gym_cooldown_ms, badminton_cooldown_ms, cricket_cooldown_ms, exercise_cooldown_ms)
   VALUES (@guild_id, @checkins_channel_id, @audit_channel_id, @gym, @badminton, @cricket, @exercise)
   ON CONFLICT(guild_id) DO UPDATE SET
-    checkins_channel_id=excluded.checkins_channel_id,
-    audit_channel_id=excluded.audit_channel_id,
+    checkins_channel_id=COALESCE(excluded.checkins_channel_id, guild_config.checkins_channel_id),
+    audit_channel_id=COALESCE(excluded.audit_channel_id, guild_config.audit_channel_id),
     gym_cooldown_ms=COALESCE(excluded.gym_cooldown_ms, guild_config.gym_cooldown_ms),
     badminton_cooldown_ms=COALESCE(excluded.badminton_cooldown_ms, guild_config.badminton_cooldown_ms),
     cricket_cooldown_ms=COALESCE(excluded.cricket_cooldown_ms, guild_config.cricket_cooldown_ms),
     exercise_cooldown_ms=COALESCE(excluded.exercise_cooldown_ms, guild_config.exercise_cooldown_ms)
 `);
+const readConfig       = db.prepare(`SELECT * FROM guild_config WHERE guild_id=?`);
 
-const readConfig = db.prepare(`SELECT * FROM guild_config WHERE guild_id=?`);
+const getStreak        = db.prepare(`SELECT * FROM streaks WHERE guild_id=? AND user_id=? AND category=?`);
+const upsertStreak     = db.prepare(`
+  INSERT INTO streaks (guild_id,user_id,category,current_streak,longest_streak,last_activity_date)
+  VALUES (@guild_id,@user_id,@category,@current,@longest,@date)
+  ON CONFLICT(guild_id,user_id,category) DO UPDATE SET
+    current_streak=excluded.current_streak,
+    longest_streak=excluded.longest_streak,
+    last_activity_date=excluded.last_activity_date
+`);
+const hasAchievement   = db.prepare(`SELECT 1 FROM achievements WHERE guild_id=? AND user_id=? AND achievement_id=?`);
+const addAchievement   = db.prepare(`INSERT INTO achievements (guild_id,user_id,achievement_id,unlocked_at) VALUES (?,?,?,?)`);
 
-// ---------- Discord Client ----------
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Channel]
-});
+const topAllTimeStmt   = db.prepare(`SELECT user_id,total FROM points WHERE guild_id=? ORDER BY total DESC LIMIT 1`);
+const guildTotalsStmt  = db.prepare(`SELECT SUM(total) as t, SUM(gym) as g, SUM(badminton) as b, SUM(cricket) as c, SUM(exercise) as e FROM points WHERE guild_id=?`);
 
-// ---------- Command Builders ----------
-const commands = [
-  new SlashCommandBuilder().setName('gym').setDescription('Claim +2 for Gym (12h cooldown)'),
-  new SlashCommandBuilder().setName('badminton').setDescription('Claim +5 for Badminton (12h cooldown)'),
-  new SlashCommandBuilder().setName('cricket').setDescription('Claim +5 for Cricket (12h cooldown)'),
-  new SlashCommandBuilder()
-    .setName('exercise')
-    .setDescription('Claim +1 for Exercise (6h cooldown)')
-    .addStringOption(opt =>
-      opt.setName('type')
-        .setDescription('Exercise type')
-        .setRequired(true)
-        .addChoices(
-          { name: 'pushup', value: 'pushup' },
-          { name: 'dumbells', value: 'dumbells' }
-        )
-    ),
-  new SlashCommandBuilder()
-    .setName('myscore').setDescription('Show your points and breakdown'),
-  new SlashCommandBuilder()
-    .setName('leaderboard').setDescription('Show the top 10')
-    .addStringOption(o =>
-      o.setName('category')
-        .setDescription('Category to rank')
-        .addChoices(
-          { name: 'all (total)', value: 'all' },
-          { name: 'gym', value: 'gym' },
-          { name: 'badminton', value: 'badminton' },
-          { name: 'cricket', value: 'cricket' },
-          { name: 'exercise', value: 'exercise' }
-        )
-    ),
-  new SlashCommandBuilder()
-    .setName('award')
-    .setDescription('Award points to a user (admin)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addUserOption(o => o.setName('user').setDescription('Member to award').setRequired(true))
-    .addIntegerOption(o => o.setName('amount').setDescription('Points').setMinValue(1).setRequired(true))
-    .addStringOption(o =>
-      o.setName('category').setDescription('Category').setRequired(true)
-       .addChoices(
-         { name: 'gym', value: 'gym' },
-         { name: 'badminton', value: 'badminton' },
-         { name: 'cricket', value: 'cricket' },
-         { name: 'exercise', value: 'exercise' }
-       )
-    )
-    .addStringOption(o => o.setName('reason').setDescription('Why').setRequired(false)),
-  new SlashCommandBuilder()
-    .setName('config')
-    .setDescription('Configure bot')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addSubcommand(sc =>
-      sc.setName('setcheckins')
-        .setDescription('Set the Habit Huddle check-ins channel')
-        .addChannelOption(o => o.setName('channel').setDescription('Text channel').addChannelTypes(ChannelType.GuildText).setRequired(true))
-    )
-    .addSubcommand(sc =>
-      sc.setName('setaudit')
-        .setDescription('Set the audit/log channel')
-        .addChannelOption(o => o.setName('channel').setDescription('Text channel').addChannelTypes(ChannelType.GuildText).setRequired(true))
-    )
-    .addSubcommand(sc =>
-      sc.setName('setcooldowns')
-        .setDescription('Override cooldowns (hours)')
-        .addIntegerOption(o => o.setName('gym').setDescription('Gym cooldown hours'))
-        .addIntegerOption(o => o.setName('badminton').setDescription('Badminton cooldown hours'))
-        .addIntegerOption(o => o.setName('cricket').setDescription('Cricket cooldown hours'))
-        .addIntegerOption(o => o.setName('exercise').setDescription('Exercise cooldown hours'))
-    )
-].map(c => c.toJSON());
+/* Squad helpers */
+const createSquadStmt  = db.prepare(`INSERT INTO squads (guild_id, owner_id, name, created_at) VALUES (?,?,?,?)`);
+const getSquadByName   = db.prepare(`SELECT * FROM squads WHERE guild_id=? AND LOWER(name)=LOWER(?)`);
+const getSquadById     = db.prepare(`SELECT * FROM squads WHERE guild_id=? AND squad_id=?`);
+const getUserSquadRow  = db.prepare(`SELECT s.* FROM squad_members m JOIN squads s ON s.squad_id=m.squad_id AND s.guild_id=m.guild_id WHERE m.guild_id=? AND m.user_id=?`);
+const addMemberStmt    = db.prepare(`INSERT INTO squad_members (guild_id,squad_id,user_id,joined_at) VALUES (?,?,?,?)`);
+const removeMemberStmt = db.prepare(`DELETE FROM squad_members WHERE guild_id=? AND user_id=?`);
+const renameSquadStmt  = db.prepare(`UPDATE squads SET name=? WHERE guild_id=? AND squad_id=?`);
+const deleteSquadStmt  = db.prepare(`DELETE FROM squads WHERE guild_id=? AND squad_id=?`);
+const listSquadMembers = db.prepare(`SELECT user_id FROM squad_members WHERE guild_id=? AND squad_id=?`);
 
-// Register commands on startup (guild for dev = instant; fallback to global)
-async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(TOKEN);
-  try {
-    if (DEV_GUILD_ID) {
-      await rest.put(Routes.applicationGuildCommands(APP_ID, DEV_GUILD_ID), { body: commands });
-      console.log('✅ Registered GUILD commands (dev).');
+/* =========================
+   UTILITIES
+========================= */
+const toYMD = (d) => d.toISOString().slice(0,10);
+function isoWeekStart(date = new Date()) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay() || 7; // 1..7 (Mon..Sun)
+  if (day !== 1) d.setUTCDate(d.getUTCDate() - (day - 1));
+  return toYMD(d);
+}
+function monthStart(date = new Date()) {
+  return toYMD(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)));
+}
+function isYesterday(isoPrev, now) {
+  if (!isoPrev) return false;
+  const prev = new Date(isoPrev + 'T00:00:00Z');
+  const y = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()-1));
+  return prev.getUTCFullYear()===y.getUTCFullYear() && prev.getUTCMonth()===y.getUTCMonth() && prev.getUTCDate()===y.getUTCDate();
+}
+const bar = (pct) => `${'█'.repeat(Math.floor(pct/10))}${'░'.repeat(10-Math.floor(pct/10))} ${pct}%`;
+function getUserRank(total) {
+  let last = RANKS[0];
+  for (const r of RANKS) { if (total >= r.min) last = r; }
+  return last;
+}
+function nextRankProgress(total) {
+  const cur = getUserRank(total);
+  if (cur.next == null) return { pct: 100, cur, need: 0 };
+  const span = cur.next - cur.min;
+  const done = total - cur.min;
+  const pct = Math.max(0, Math.min(100, Math.floor((done/span)*100)));
+  return { pct, cur, need: cur.next - total };
+}
+function getRandomSuccess() { return SUCCESS_MESSAGES[Math.floor(Math.random()*SUCCESS_MESSAGES.length)]; }
+
+function sumSince(guildId, sinceTs, category /* 'all' for total */) {
+  if (category === 'all') {
+    return db.prepare(`SELECT user_id, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts>=? GROUP BY user_id ORDER BY score DESC LIMIT 10`)
+             .all(guildId, sinceTs);
+  }
+  return db.prepare(`SELECT user_id, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts>=? AND category=? GROUP BY user_id ORDER BY score DESC LIMIT 10`)
+           .all(guildId, sinceTs, category);
+}
+function sumForUserSince(guildId, userId, sinceTs, category /* 'total' or cat */) {
+  if (category === 'total') {
+    return db.prepare(`SELECT COALESCE(SUM(amount),0) AS s FROM points_log WHERE guild_id=? AND user_id=? AND ts>=?`)
+             .get(guildId, userId, sinceTs).s || 0;
+  }
+  return db.prepare(`SELECT COALESCE(SUM(amount),0) AS s FROM points_log WHERE guild_id=? AND user_id=? AND ts>=? AND category=?`)
+           .get(guildId, userId, sinceTs, category).s || 0;
+}
+function sumForUsersSince(guildId, userIds, sinceTs, category /* 'all' or cat */) {
+  if (!userIds.length) return [];
+  const placeholders = userIds.map(()=>'?').join(',');
+  if (category === 'all') {
+    return db.prepare(`SELECT user_id, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts>=? AND user_id IN (${placeholders}) GROUP BY user_id`)
+             .all(guildId, sinceTs, ...userIds);
+  }
+  return db.prepare(`SELECT user_id, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts>=? AND category=? AND user_id IN (${placeholders}) GROUP BY user_id`)
+           .all(guildId, sinceTs, category, ...userIds);
+}
+
+/* =========================
+   CORE AWARD PIPELINE
+========================= */
+function ensureUserRow(guildId, userId) {
+  upsertUser.run({ guild_id: guildId, user_id: userId });
+}
+function addPoints({ guildId, userId, category, amount }) {
+  ensureUserRow(guildId, userId);
+  addPointsStmt.run({ guild_id: guildId, user_id: userId, category, add: amount });
+  db.prepare(`INSERT INTO points_log (guild_id,user_id,category,amount,ts) VALUES (?,?,?,?,?)`)
+    .run(guildId, userId, category, amount, Date.now());
+
+  // Update streaks & achievements
+  const now = new Date();
+  const today = toYMD(now);
+  const st = getStreak.get(guildId, userId, category);
+  let current = 1, longest = 1;
+  if (st) {
+    if (st.last_activity_date === today) {
+      current = st.current_streak; longest = st.longest_streak;
+    } else if (isYesterday(st.last_activity_date, now)) {
+      current = st.current_streak + 1; longest = Math.max(st.longest_streak, current);
     } else {
-      await rest.put(Routes.applicationCommands(APP_ID), { body: commands });
-      console.log('✅ Registered GLOBAL commands (may take up to ~1 hour to appear).');
+      current = 1; longest = Math.max(st.longest_streak || 1, 1);
     }
-  } catch (e) {
-    console.error('Command registration failed:', e);
+  }
+  upsertStreak.run({ guild_id: guildId, user_id: userId, category, current, longest, date: today });
+
+  // Achievements
+  if (current >= 3 && !hasAchievement.get(guildId, userId, 'fire_starter')) {
+    addAchievement.run(guildId, userId, 'fire_starter', Date.now());
+  }
+  const row = getUserStmt.get(guildId, userId);
+  if ((row?.gym || 0) >= 50 && !hasAchievement.get(guildId, userId, 'gym_warrior')) {
+    addAchievement.run(guildId, userId, 'gym_warrior', Date.now());
+  }
+  const sportsPoints = (row?.badminton||0)+(row?.cricket||0);
+  if (sportsPoints >= 75 && !hasAchievement.get(guildId, userId, 'sports_star')) {
+    addAchievement.run(guildId, userId, 'sports_star', Date.now());
+  }
+  if ((row?.total || 0) >= 100 && !hasAchievement.get(guildId, userId, 'century_club')) {
+    addAchievement.run(guildId, userId, 'century_club', Date.now());
+  }
+  const top = topAllTimeStmt.get(guildId);
+  if (top && top.user_id === userId && !hasAchievement.get(guildId, userId, 'champion')) {
+    addAchievement.run(guildId, userId, 'champion', Date.now());
   }
 }
 
-// ---------- Award Engine ----------
 function getEffectiveCooldownMs(guildId, category) {
   const cfg = readConfig.get(guildId);
   if (!cfg) return COOLDOWNS[category];
@@ -217,38 +351,20 @@ function getEffectiveCooldownMs(guildId, category) {
   };
   return map[category];
 }
-
-function formatMs(ms) {
-  const s = Math.ceil(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = s % 60;
-  return `${h}h ${m}m ${ss}s`;
-}
-
-function ensureUserRow(guildId, userId) {
-  upsertUser.run({ guild_id: guildId, user_id: userId });
-}
-
-function addPoints({ guildId, userId, category, amount }) {
-  ensureUserRow(guildId, userId);
-  addPointsStmt.run({ guild_id: guildId, user_id: userId, category, add: amount });
-}
-
 function checkCooldown({ guildId, userId, category }) {
   const row = getCooldownStmt.get(guildId, userId, category);
   const now = Date.now();
   const cd = getEffectiveCooldownMs(guildId, category);
-  if (row && now - row.last_ms < cd) {
-    return cd - (now - row.last_ms); // ms remaining
-  }
+  if (row && now - row.last_ms < cd) return cd - (now - row.last_ms);
   return 0;
 }
-
 function commitCooldown({ guildId, userId, category }) {
   setCooldownStmt.run({ guild_id: guildId, user_id: userId, category, last_ms: Date.now() });
 }
 
+/* =========================
+   AUDIT
+========================= */
 async function auditLog(guild, description) {
   const cfg = readConfig.get(guild.id);
   if (!cfg?.audit_channel_id) return;
@@ -258,12 +374,156 @@ async function auditLog(guild, description) {
   ch.send({ embeds: [embed] }).catch(() => {});
 }
 
-// ---------- Handlers ----------
-client.on('ready', () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
+/* =========================
+   DISCORD CLIENT
+========================= */
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Channel]
 });
 
-// Slash commands
+/* =========================
+   COMMANDS
+========================= */
+const leaderboardCmd = new SlashCommandBuilder()
+  .setName('leaderboard')
+  .setDescription('Show rankings')
+  .addStringOption(o =>
+    o.setName('category').setDescription('Category to rank').addChoices(
+      { name: 'All (total)', value: 'all' },
+      { name: 'Gym', value: 'gym' },
+      { name: 'Badminton', value: 'badminton' },
+      { name: 'Cricket', value: 'cricket' },
+      { name: 'Exercise', value: 'exercise' }
+    )
+  )
+  .addStringOption(o =>
+    o.setName('period').setDescription('Time period').addChoices(
+      { name: 'All Time', value: 'all' },
+      { name: 'This Week', value: 'week' },
+      { name: 'This Month', value: 'month' }
+    )
+  );
+
+const squadCmd = new SlashCommandBuilder()
+  .setName('squad')
+  .setDescription('Squad management & stats')
+  .addSubcommand(sc => sc.setName('create')
+    .setDescription('Create a new squad')
+    .addStringOption(o => o.setName('name').setDescription('Squad name').setRequired(true)))
+  .addSubcommand(sc => sc.setName('join')
+    .setDescription('Join an existing squad by name')
+    .addStringOption(o => o.setName('name').setDescription('Exact squad name').setRequired(true)))
+  .addSubcommand(sc => sc.setName('leave').setDescription('Leave your current squad'))
+  .addSubcommand(sc => sc.setName('rename')
+    .setDescription('Rename your squad (owner only)')
+    .addStringOption(o => o.setName('name').setDescription('New name').setRequired(true)))
+  .addSubcommand(sc => sc.setName('disband')
+    .setDescription('Disband your squad (owner only)'))
+  .addSubcommand(sc => sc.setName('info')
+    .setDescription('View your squad or a specific squad')
+    .addStringOption(o => o.setName('name').setDescription('Squad name')))
+  .addSubcommand(sc => sc.setName('leaderboard')
+    .setDescription('Squad leaderboard')
+    .addStringOption(o => o.setName('category').setDescription('Category').addChoices(
+      { name: 'All (total)', value: 'all' },
+      { name: 'Gym', value: 'gym' },
+      { name: 'Badminton', value: 'badminton' },
+      { name: 'Cricket', value: 'cricket' },
+      { name: 'Exercise', value: 'exercise' }
+    ))
+    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(
+      { name: 'All Time', value: 'all' },
+      { name: 'This Week', value: 'week' },
+      { name: 'This Month', value: 'month' }
+    ))
+  );
+
+const commands = [
+  new SlashCommandBuilder().setName('gym').setDescription('💪 Claim +2 for Gym (12h cooldown)'),
+  new SlashCommandBuilder().setName('badminton').setDescription('🏸 Claim +5 for Badminton (12h cooldown)'),
+  new SlashCommandBuilder().setName('cricket').setDescription('🏏 Claim +5 for Cricket (12h cooldown)'),
+  new SlashCommandBuilder()
+    .setName('exercise')
+    .setDescription('🏃 Claim +1 for an exercise (6h cooldown)')
+    .addStringOption(opt =>
+      opt.setName('type').setDescription('Quick pick (optional)').addChoices(
+        { name: 'pushup', value: 'pushup' },
+        { name: 'dumbells', value: 'dumbells' },
+        { name: 'yoga', value: 'yoga' },
+        { name: 'walking', value: 'walking' },
+        { name: 'jogging', value: 'jogging' },
+        { name: 'burpees', value: 'burpees' },
+        { name: 'planks', value: 'planks' }
+      )
+    )
+    .addStringOption(opt => opt.setName('custom').setDescription('Or type your own').setMaxLength(50)),
+  new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show your score, rank, and streaks'),
+  new SlashCommandBuilder().setName('profile').setDescription('🏆 Show your score, rank, and streaks'), // alias
+  leaderboardCmd,
+  new SlashCommandBuilder().setName('challenge').setDescription('🎯 View weekly challenges and claim rewards'),
+  new SlashCommandBuilder().setName('guildstats').setDescription('📊 View server-wide fitness stats'),
+  new SlashCommandBuilder()
+    .setName('remind').setDescription('⏰ Set a reminder')
+    .addStringOption(o => o.setName('activity').setDescription('Activity').setRequired(true))
+    .addIntegerOption(o => o.setName('hours').setDescription('Remind me in X hours').setMinValue(1).setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('buddy').setDescription('👯 Set or view your workout buddy')
+    .addUserOption(o => o.setName('user').setDescription('Your buddy (leave empty to view)')),
+  new SlashCommandBuilder()
+    .setName('award').setDescription('🎁 Award points to a user (admin)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption(o => o.setName('user').setDescription('Member').setRequired(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('Points').setMinValue(1).setRequired(true))
+    .addStringOption(o => o.setName('category').setDescription('Category').setRequired(true).addChoices(
+      { name: 'gym', value: 'gym' }, { name: 'badminton', value: 'badminton' },
+      { name: 'cricket', value: 'cricket' }, { name: 'exercise', value: 'exercise' }
+    ))
+    .addStringOption(o => o.setName('reason').setDescription('Why')),
+  new SlashCommandBuilder()
+    .setName('config').setDescription('⚙️ Configure bot')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand(sc =>
+      sc.setName('setcheckins').setDescription('Set the check-ins channel')
+        .addChannelOption(o => o.setName('channel').setDescription('Text channel').addChannelTypes(ChannelType.GuildText).setRequired(true)))
+    .addSubcommand(sc =>
+      sc.setName('setaudit').setDescription('Set the audit/log channel')
+        .addChannelOption(o => o.setName('channel').setDescription('Text channel').addChannelTypes(ChannelType.GuildText).setRequired(true)))
+    .addSubcommand(sc =>
+      sc.setName('setcooldowns').setDescription('Override cooldowns (hours)')
+        .addIntegerOption(o => o.setName('gym').setDescription('Gym'))
+        .addIntegerOption(o => o.setName('badminton').setDescription('Badminton'))
+        .addIntegerOption(o => o.setName('cricket').setDescription('Cricket'))
+        .addIntegerOption(o => o.setName('exercise').setDescription('Exercise'))),
+  squadCmd
+].map(c => c.toJSON());
+
+/* =========================
+   REGISTER COMMANDS
+========================= */
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
+  try {
+    if (DEV_GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(APP_ID, DEV_GUILD_ID), { body: commands });
+      console.log('✅ Registered GUILD commands (dev).');
+    } else {
+      await rest.put(Routes.applicationCommands(APP_ID), { body: commands });
+      console.log('✅ Registered GLOBAL commands.');
+    }
+  } catch (e) {
+    console.error('Command registration failed:', e);
+  }
+}
+
+/* =========================
+   HANDLERS
+========================= */
+client.on('ready', () => console.log(`🤖 Logged in as ${client.user.tag}`));
+
 client.on('interactionCreate', async (i) => {
   if (!i.isChatInputCommand()) return;
   const { commandName, guild, user, options } = i;
@@ -278,40 +538,121 @@ client.on('interactionCreate', async (i) => {
     addPoints({ guildId: guild.id, userId: user.id, category, amount });
     if (!explicitAmount) commitCooldown({ guildId: guild.id, userId: user.id, category });
     const row = getUserStmt.get(guild.id, user.id);
-    await i.reply({ content: `✅ **+${amount}** ${category} points added for <@${user.id}>. Total: **${row.total}**`, ephemeral: false });
-    auditLog(guild, `🏅 <@${user.id}> **+${amount}** in **${category}** ${explicitAmount ? '(manual award)' : '(claim)'} • Total: **${row.total}**`);
+    const msg = getRandomSuccess();
+    await i.reply({ content: `✅ **+${amount}** ${category} points! ${msg}  Total: **${row.total}**` });
+    auditLog(guild, `🏅 <@${user.id}> **+${amount}** in **${category}** • Total: **${row.total}**`);
   };
 
-  if (commandName === 'gym')         return execClaim('gym');
-  if (commandName === 'badminton')   return execClaim('badminton');
-  if (commandName === 'cricket')     return execClaim('cricket');
-  if (commandName === 'exercise')    return execClaim('exercise');
+  if (commandName === 'gym')       return execClaim('gym');
+  if (commandName === 'badminton') return execClaim('badminton');
+  if (commandName === 'cricket')   return execClaim('cricket');
+  if (commandName === 'exercise')  return execClaim('exercise');
 
-  if (commandName === 'myscore') {
+  if (commandName === 'myscore' || commandName === 'profile') {
     ensureUserRow(guild.id, user.id);
     const r = getUserStmt.get(guild.id, user.id);
+    const { pct, cur, need } = nextRankProgress(r.total);
+    const st = (cat) => getStreak.get(guild.id, user.id, cat) || { current_streak:0, longest_streak:0 };
     const embed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle(`🏆 ${i.user.username}'s Score`)
+      .setColor(cur.color)
+      .setTitle(`🏆 ${i.user.username}'s Profile`)
+      .setThumbnail(i.user.displayAvatarURL())
       .addFields(
         { name: 'Total', value: String(r.total), inline: true },
-        { name: 'Gym', value: String(r.gym), inline: true },
-        { name: 'Badminton', value: String(r.badminton), inline: true },
-        { name: 'Cricket', value: String(r.cricket), inline: true },
-        { name: 'Exercise', value: String(r.exercise), inline: true }
+        { name: 'Rank',  value: cur.name, inline: true },
+        { name: 'Progress', value: bar(pct), inline: false },
+        { name: 'Gym', value: `${r.gym}  (🔥${st('gym').current_streak} • best ${st('gym').longest_streak})`, inline: true },
+        { name: 'Exercise', value: `${r.exercise}  (🔥${st('exercise').current_streak} • best ${st('exercise').longest_streak})`, inline: true },
+        { name: 'Badminton', value: `${r.badminton}  (🔥${st('badminton').current_streak} • best ${st('badminton').longest_streak})`, inline: true },
+        { name: 'Cricket', value: `${r.cricket}  (🔥${st('cricket').current_streak} • best ${st('cricket').longest_streak})`, inline: true }
       );
-    return i.reply({ embeds: [embed], ephemeral: false });
+    if (need > 0) embed.addFields({ name: 'Next Rank', value: `${need} points to ${RANKS.find(x=>x.min===cur.next)?.name}`, inline: false });
+    return i.reply({ embeds: [embed] });
   }
 
   if (commandName === 'leaderboard') {
     const cat = options.getString('category') ?? 'all';
-    const col = (cat === 'all') ? 'total' : cat;
-    const rows = db.prepare(`SELECT user_id, ${col} as score FROM points WHERE guild_id=? ORDER BY ${col} DESC LIMIT 10`).all(guild.id);
-    const lines = rows.length
-      ? rows.map((r, idx) => `**${idx + 1}.** <@${r.user_id}> — **${r.score}**`).join('\n')
-      : '_No data yet._';
-    const embed = new EmbedBuilder().setColor(0xffc857).setTitle(`🏅 Leaderboard — ${cat}`).setDescription(lines);
-    return i.reply({ embeds: [embed], ephemeral: false });
+    const period = options.getString('period') ?? 'all';
+    let lines;
+    if (period === 'all') {
+      const col = (cat === 'all') ? 'total' : cat;
+      const rows = db.prepare(`SELECT user_id, ${col} as score FROM points WHERE guild_id=? ORDER BY ${col} DESC LIMIT 10`).all(guild.id);
+      lines = rows.length ? rows.map((r, idx) => `${MEDAL(idx+1)} <@${r.user_id}> — **${r.score}**`).join('\n') : '_No data yet._';
+    } else {
+      const since = period === 'week' ? Date.parse(isoWeekStart(new Date())) : Date.parse(monthStart(new Date()));
+      const rows = sumSince(guild.id, since, cat === 'all' ? 'all' : cat);
+      lines = rows.length ? rows.map((r, idx) => `${MEDAL(idx+1)} <@${r.user_id}> — **${r.score}**`).join('\n') : `_No data yet for this ${period}.`;
+    }
+    const titleCat = (cat === 'all') ? 'Total' : cat;
+    const embed = new EmbedBuilder().setColor(0xffc857).setTitle(`🏅 Leaderboard — ${titleCat} (${period})`).setDescription(lines);
+    return i.reply({ embeds: [embed] });
+  }
+
+  if (commandName === 'challenge') {
+    const week = isoWeekStart(new Date());
+    const since = Date.parse(week);
+    const parts = [];
+    for (const ch of WEEKLY_CHALLENGES) {
+      let progress = 0;
+      if (ch.target === 'total') {
+        progress = sumForUserSince(guild.id, user.id, since, 'total');
+      } else if (ch.target === 'total_sports') {
+        const b = sumForUserSince(guild.id, user.id, since, 'badminton');
+        const c = sumForUserSince(guild.id, user.id, since, 'cricket');
+        progress = b + c;
+      } else {
+        progress = sumForUserSince(guild.id, user.id, since, ch.target);
+      }
+      const done = Math.min(progress, ch.goal);
+      const pct = Math.min(100, Math.floor((done/ch.goal)*100));
+      parts.push(`${ch.emoji} **${ch.name}** — ${done}/${ch.goal}  ${bar(pct)}`);
+
+      const claimed = db.prepare(`SELECT 1 FROM challenge_claims WHERE guild_id=? AND user_id=? AND challenge_id=? AND week_start=?`)
+                        .get(guild.id, user.id, ch.id, week);
+      if (!claimed && progress >= ch.goal) {
+        addPoints({ guildId: guild.id, userId: user.id, category: ch.rewardCat, amount: ch.reward });
+        db.prepare(`INSERT INTO challenge_claims (guild_id,user_id,challenge_id,week_start,claimed_at) VALUES (?,?,?,?,?)`)
+          .run(guild.id, user.id, ch.id, week, Date.now());
+        parts.push(`➡️ Reward claimed: **+${ch.reward}** points!`);
+      }
+    }
+    const embed = new EmbedBuilder().setColor(0x00b894).setTitle('📆 Weekly Challenges').setDescription(parts.join('\n'));
+    return i.reply({ embeds: [embed] });
+  }
+
+  if (commandName === 'guildstats') {
+    const t = guildTotalsStmt.get(guild.id) || { t:0,g:0,b:0,c:0,e:0 };
+    const embed = new EmbedBuilder()
+      .setColor(0x00cec9).setTitle(`📊 ${guild.name} — Server Stats`)
+      .addFields(
+        { name: 'Total Points', value: String(t.t || 0), inline: true },
+        { name: 'Gym', value: String(t.g || 0), inline: true },
+        { name: 'Badminton', value: String(t.b || 0), inline: true },
+        { name: 'Cricket', value: String(t.c || 0), inline: true },
+        { name: 'Exercise', value: String(t.e || 0), inline: true }
+      );
+    return i.reply({ embeds: [embed] });
+  }
+
+  if (commandName === 'remind') {
+    const activity = options.getString('activity', true);
+    const hours = options.getInteger('hours', true);
+    const due = Date.now() + hours * 3600000;
+    db.prepare(`INSERT INTO reminders (guild_id,user_id,activity,due_at,every_hours) VALUES (?,?,?,?,?)`)
+      .run(guild.id, user.id, activity, due, null);
+    return i.reply({ content: `⏰ Okay! I’ll remind you about **${activity}** in **${hours}h**.` });
+  }
+
+  if (commandName === 'buddy') {
+    const u = options.getUser('user');
+    if (!u) {
+      const b = db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id=? AND user_id=?`).get(guild.id, user.id);
+      return i.reply({ content: b?.buddy_id ? `👯 Your buddy is <@${b.buddy_id}>.` : 'You have no buddy set. Try `/buddy user:@someone`.' , ephemeral: true });
+    }
+    if (u.id === user.id) return i.reply({ content: 'Pick someone else 🤝', ephemeral: true });
+    db.prepare(`INSERT INTO buddies (guild_id,user_id,buddy_id) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET buddy_id=excluded.buddy_id`)
+      .run(guild.id, user.id, u.id);
+    return i.reply({ content: `👯 Buddy set! You & <@${u.id}> can keep each other accountable.` });
   }
 
   if (commandName === 'award') {
@@ -330,44 +671,137 @@ client.on('interactionCreate', async (i) => {
     const sub = options.getSubcommand();
     if (sub === 'setcheckins') {
       const ch = options.getChannel('channel', true);
-      upsertConfig.run({
-        guild_id: guild.id,
-        checkins_channel_id: ch.id,
-        audit_channel_id: null,
-        gym: null, badminton: null, cricket: null, exercise: null
-      });
+      upsertConfig.run({ guild_id: guild.id, checkins_channel_id: ch.id, audit_channel_id: null, gym: null, badminton: null, cricket: null, exercise: null });
       return i.reply({ content: `✅ Check-ins channel set to ${ch}.`, ephemeral: true });
     }
     if (sub === 'setaudit') {
       const ch = options.getChannel('channel', true);
-      upsertConfig.run({
-        guild_id: guild.id,
-        checkins_channel_id: null,
-        audit_channel_id: ch.id,
-        gym: null, badminton: null, cricket: null, exercise: null
-      });
+      upsertConfig.run({ guild_id: guild.id, checkins_channel_id: null, audit_channel_id: ch.id, gym: null, badminton: null, cricket: null, exercise: null });
       return i.reply({ content: `✅ Audit channel set to ${ch}.`, ephemeral: true });
     }
     if (sub === 'setcooldowns') {
-      const gym = options.getInteger('gym');
-      const badminton = options.getInteger('badminton');
-      const cricket = options.getInteger('cricket');
-      const exercise = options.getInteger('exercise');
+      const gymH = options.getInteger('gym'), badH = options.getInteger('badminton'), criH = options.getInteger('cricket'), exH = options.getInteger('exercise');
       upsertConfig.run({
-        guild_id: guild.id,
-        checkins_channel_id: null,
-        audit_channel_id: null,
-        gym: gym ? gym * 3600000 : null,
-        badminton: badminton ? badminton * 3600000 : null,
-        cricket: cricket ? cricket * 3600000 : null,
-        exercise: exercise ? exercise * 3600000 : null
+        guild_id: guild.id, checkins_channel_id: null, audit_channel_id: null,
+        gym: gymH ? gymH * 3600000 : null, badminton: badH ? badH * 3600000 : null,
+        cricket: criH ? criH * 3600000 : null, exercise: exH ? exH * 3600000 : null
       });
       return i.reply({ content: '✅ Cooldowns updated (hours).', ephemeral: true });
     }
   }
+
+  /* =========================
+     SQUAD SUBCOMMANDS
+  ========================= */
+  if (commandName === 'squad') {
+    const sub = options.getSubcommand();
+
+    if (sub === 'create') {
+      const name = options.getString('name', true).trim();
+      const existing = getSquadByName.get(guild.id, name);
+      if (existing) return i.reply({ content: 'That squad name is taken. Try another.', ephemeral: true });
+      const already = getUserSquadRow.get(guild.id, user.id);
+      if (already) return i.reply({ content: `You are already in **${already.name}**. Leave first with \`/squad leave\`.`, ephemeral: true });
+
+      const info = createSquadStmt.run(guild.id, user.id, name, Date.now());
+      addMemberStmt.run(guild.id, info.lastInsertRowid, user.id, Date.now());
+      return i.reply({ content: `🛡️ Squad **${name}** created! You are the owner. Invite friends with \`/squad join name:${name}\`.` });
+    }
+
+    if (sub === 'join') {
+      const name = options.getString('name', true).trim();
+      const sq = getSquadByName.get(guild.id, name);
+      if (!sq) return i.reply({ content: 'No squad by that name.', ephemeral: true });
+      const already = getUserSquadRow.get(guild.id, user.id);
+      if (already) return i.reply({ content: `You are already in **${already.name}**. Leave first with \`/squad leave\`.`, ephemeral: true });
+
+      addMemberStmt.run(guild.id, sq.squad_id, user.id, Date.now());
+      return i.reply({ content: `👥 Joined squad **${sq.name}**!` });
+    }
+
+    if (sub === 'leave') {
+      const sq = getUserSquadRow.get(guild.id, user.id);
+      if (!sq) return i.reply({ content: 'You are not in a squad.', ephemeral: true });
+      if (sq.owner_id === user.id) return i.reply({ content: 'You are the owner. Transfer ownership or disband with `/squad disband`.', ephemeral: true });
+      removeMemberStmt.run(guild.id, user.id);
+      return i.reply({ content: `👋 You left **${sq.name}**.` });
+    }
+
+    if (sub === 'rename') {
+      const sq = getUserSquadRow.get(guild.id, user.id);
+      if (!sq) return i.reply({ content: 'You are not in a squad.', ephemeral: true });
+      if (sq.owner_id !== user.id) return i.reply({ content: 'Only the squad owner can rename the squad.', ephemeral: true });
+      const newName = options.getString('name', true).trim();
+      if (getSquadByName.get(guild.id, newName)) return i.reply({ content: 'That name is already taken.', ephemeral: true });
+      renameSquadStmt.run(newName, guild.id, sq.squad_id);
+      return i.reply({ content: `✏️ Squad renamed to **${newName}**.` });
+    }
+
+    if (sub === 'disband') {
+      const sq = getUserSquadRow.get(guild.id, user.id);
+      if (!sq) return i.reply({ content: 'You are not in a squad.', ephemeral: true });
+      if (sq.owner_id !== user.id) return i.reply({ content: 'Only the squad owner can disband.', ephemeral: true });
+      deleteSquadStmt.run(guild.id, sq.squad_id);
+      return i.reply({ content: `💥 Squad **${sq.name}** disbanded.` });
+    }
+
+    if (sub === 'info') {
+      const name = options.getString('name');
+      const sq = name ? getSquadByName.get(guild.id, name.trim()) : getUserSquadRow.get(guild.id, user.id);
+      if (!sq) return i.reply({ content: 'No squad found. Specify a name or join one.', ephemeral: true });
+
+      const members = listSquadMembers.all(guild.id, sq.squad_id).map(r => r.user_id);
+      const total = members.length
+        ? db.prepare(`SELECT COALESCE(SUM(total),0) AS s FROM points WHERE guild_id=? AND user_id IN (${members.map(()=>'?').join(',')})`)
+            .get(guild.id, ...members).s || 0
+        : 0;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x2ecc71)
+        .setTitle(`🛡️ Squad: ${sq.name}`)
+        .setDescription(members.length ? members.map(id => `• <@${id}>`).join('\n') : '_No members yet_')
+        .addFields({ name:'Total Points', value:String(total), inline:true },
+                   { name:'Owner', value:`<@${sq.owner_id}>`, inline:true });
+
+      return i.reply({ embeds: [embed] });
+    }
+
+    if (sub === 'leaderboard') {
+      const cat = options.getString('category') ?? 'all';
+      const period = options.getString('period') ?? 'all';
+
+      // build squad totals by summing member logs (period) or member totals (all-time)
+      const squads = db.prepare(`SELECT * FROM squads WHERE guild_id=?`).all(guild.id);
+      const results = [];
+      for (const sq of squads) {
+        const members = listSquadMembers.all(guild.id, sq.squad_id).map(r => r.user_id);
+        if (!members.length) { results.push({ name: sq.name, score: 0 }); continue; }
+
+        let score = 0;
+        if (period === 'all') {
+          const column = (cat === 'all') ? 'total' : cat;
+          const total = db.prepare(`SELECT COALESCE(SUM(${column}),0) AS s FROM points WHERE guild_id=? AND user_id IN (${members.map(()=>'?').join(',')})`)
+                          .get(guild.id, ...members).s || 0;
+          score = total;
+        } else {
+          const since = period === 'week' ? Date.parse(isoWeekStart(new Date())) : Date.parse(monthStart(new Date()));
+          const rows = sumForUsersSince(guild.id, members, since, cat === 'all' ? 'all' : cat);
+          score = rows.reduce((a,r) => a + (r.score||0), 0);
+        }
+        results.push({ name: sq.name, score });
+      }
+      results.sort((a,b) => b.score - a.score);
+
+      const lines = results.length
+        ? results.slice(0,10).map((r,idx) => `${MEDAL(idx+1)} **${r.name}** — **${r.score}**`).join('\n')
+        : '_No squads yet._';
+      const embed = new EmbedBuilder().setColor(0x1abc9c).setTitle(`🛡️ Squad Leaderboard — ${cat} (${period})`).setDescription(lines);
+      return i.reply({ embeds: [embed] });
+    }
+  }
 });
 
-// Habit Huddle message listener (auto-award)
+/* Auto-award from #check-in messages, including "Exercise + anything" and typo "Excercise" */
 client.on('messageCreate', async (msg) => {
   if (!msg.guild || msg.author.bot) return;
   const cfg = readConfig.get(msg.guild.id);
@@ -378,26 +812,50 @@ client.on('messageCreate', async (msg) => {
 
   const tryAward = async (category) => {
     const remaining = checkCooldown({ guildId: msg.guild.id, userId: authorId, category });
-    if (remaining > 0) return; // silent ignore to avoid spam
+    if (remaining > 0) return;
     const amount = POINTS[category];
     addPoints({ guildId: msg.guild.id, userId: authorId, category, amount });
     commitCooldown({ guildId: msg.guild.id, userId: authorId, category });
     const row = getUserStmt.get(msg.guild.id, authorId);
     msg.react('✅').catch(() => {});
-    auditLog(msg.guild, `📥 Auto-award **+${amount}** to <@${authorId}> in **${category}** from check-in • Total: **${row.total}**`);
+    auditLog(msg.guild, `📥 Auto-award **+${amount}** to <@${authorId}> in **${category}** • Total: **${row.total}**`);
   };
 
-  if (content.includes('exercise + pushup') || content.includes('exercise + pushups') || content.includes('pushup'))
-    await tryAward('exercise');
-  if (content.includes('exercise + dumbell') || content.includes('dumbell') || content.includes('dumbbells'))
-    await tryAward('exercise');
-  if (content.includes('gym'))
-    await tryAward('gym');
-  if (content.includes('badminton') || content.includes('🏸'))
-    await tryAward('badminton');
-  if (content.includes('cricket') || content.includes('🏏'))
-    await tryAward('cricket');
+  // Accept "exercise + anything" (and common typo "excercise")
+  const exercisePlusAny = /\bex(?:er|cer)cise\s*\+\s*([^\r\n]+)/i;
+  let exerciseAwarded = false;
+  if (exercisePlusAny.test(msg.content)) { await tryAward('exercise'); exerciseAwarded = true; }
+  if (!exerciseAwarded && /\b(push[-\s]?ups?|dumb(?:bell|ells?)|burpees?|planks?|sit[-\s]?ups?|yoga|walking|jogging|running)\b/i.test(msg.content)) {
+    await tryAward('exercise'); exerciseAwarded = true;
+  }
+  if (content.includes('gym'))                          await tryAward('gym');
+  if (content.includes('badminton') || content.includes('🏸')) await tryAward('badminton');
+  if (content.includes('cricket')   || content.includes('🏏')) await tryAward('cricket');
 });
 
+/* Reminders ticker (DMs users) */
+setInterval(async () => {
+  const now = Date.now();
+  const due = db.prepare(`SELECT rowid, guild_id, user_id, activity FROM reminders WHERE due_at<=?`).all(now);
+  for (const r of due) {
+    try {
+      const guild = await client.guilds.fetch(r.guild_id);
+      const member = await guild.members.fetch(r.user_id).catch(() => null);
+      if (member) member.send(`⏰ Reminder: log your **${r.activity}** in **${guild.name}**!`).catch(()=>{});
+    } catch {}
+    db.prepare(`DELETE FROM reminders WHERE rowid=?`).run(r.rowid);
+  }
+}, 60_000);
+
+/* Helpers */
+function formatMs(ms) {
+  const s = Math.ceil(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return `${h}h ${m}m ${ss}s`;
+}
+
+/* BOOT */
 await registerCommands();
 client.login(TOKEN);
