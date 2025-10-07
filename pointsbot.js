@@ -604,7 +604,7 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
     pillGrad.addColorStop(0, "#10b981");
     pillGrad.addColorStop(1, "#059669");
     ctx.fillStyle = pillGrad; ctx.fill();
-    ctx.fillStyle = "#052e21";
+    ctx.fillStyle = "#ffffff"; 
     ctx.fillText(score, pillX + (sw - ctx.measureText(score).width)/2, pillY + 27);
 
     y += rowH + 10;
