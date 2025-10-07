@@ -3,8 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "main": "pointsbot.js",
-  "scripts": { "start": "node pointsbot.js" },
+  "scripts": {
+    "start": "node pointsbot.js"
+  },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.80",
     "better-sqlite3": "^9.4.0",
     "discord.js": "^14.15.3",
     "dotenv": "^16.4.5"
