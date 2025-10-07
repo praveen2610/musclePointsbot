@@ -4,7 +4,8 @@
   "type": "module",
   "main": "pointsbot.js",
   "scripts": {
-    "start": "node pointsbot.js"
+    "start": "node pointsbot.js",
+    "postinstall": "npm rebuild better-sqlite3 --build-from-source"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.80",
