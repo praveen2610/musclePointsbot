@@ -1,0 +1,13 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "nixpacks": {
+    "phases": {
+      "build": {
+        "cmds": [
+          "npm install --omit=dev",
+          "npm rebuild better-sqlite3"
+        ]
+      }
+    }
+  }
+}
