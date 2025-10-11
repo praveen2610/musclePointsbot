@@ -20,7 +20,6 @@ const CONFIG = {
   token: (process.env.DISCORD_TOKEN || '').trim(),
   devGuildId: (process.env.DEV_GUILD_ID || '').trim(),
   dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
-  adminRoleNames: (process.env.ADMIN_ROLES || 'Admin,Moderator').split(',').map(r => r.trim()),
 };
 
 const COOLDOWNS = {
@@ -41,7 +40,11 @@ const POINTS = {
   yoga: 2,
 };
 
-const KM_POINT_RATE = 0.5;
+const DISTANCE_RATES = {
+  walking: 0.5,
+  jogging: 0.6,
+  running: 0.7,
+};
 
 const DEDUCTIONS = {
   chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
@@ -50,8 +53,6 @@ const DEDUCTIONS = {
   pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
   burger: { points: 3, emoji: '🍔', label: 'Burger' },
   sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
-  icecream: { points: 2, emoji: '🍦', label: 'Ice Cream' },
-  cake: { points: 3, emoji: '🍰', label: 'Cake' },
 };
 
 const RANKS = [
@@ -87,22 +88,12 @@ class PointsDatabase {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
+    this.runMigrations();
     this.prepareStatements();
   }
 
   initSchema() {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS points (
-        guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
-        total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0,
-        badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
-        exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0,
-        yoga REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0,
-        longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
-        created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-        PRIMARY KEY (guild_id, user_id)
-      );
       CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
       CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT );
       CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
@@ -112,6 +103,41 @@ class PointsDatabase {
     `);
   }
   
+  runMigrations() {
+    const columns = this.db.prepare(`PRAGMA table_info(points)`).all();
+    if (!columns.length || columns.some(col => col.name === 'swimming')) {
+      return; // Table is new or already migrated
+    }
+
+    console.log("MIGRATION: 'points' table is outdated. Applying updates...");
+    const migrate = this.db.transaction(() => {
+      const data = this.db.prepare('SELECT * FROM points').all();
+      this.db.exec('ALTER TABLE points RENAME TO points_old');
+      this.db.exec(`
+        CREATE TABLE points (
+          guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
+          gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
+          exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0,
+          current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
+          created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+          PRIMARY KEY (guild_id, user_id)
+        );
+      `);
+      const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`);
+      for (const user of data) {
+        insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null });
+      }
+      this.db.exec('DROP TABLE points_old');
+    });
+    try {
+      migrate();
+      console.log("MIGRATION: Successfully updated 'points' table schema.");
+    } catch (err) {
+      console.error("MIGRATION: Failed! Rolling back.", err);
+      this.db.exec('DROP TABLE points; ALTER TABLE points_old RENAME TO points;');
+    }
+  }
+
   prepareStatements() {
     const stmts = {};
     stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
@@ -130,11 +156,9 @@ class PointsDatabase {
     stmts.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
     stmts.unlockAchievement = this.db.prepare(`INSERT OR IGNORE INTO achievements (guild_id, user_id, achievement_id) VALUES (?, ?, ?)`),
     stmts.getUserAchievements = this.db.prepare(`SELECT achievement_id FROM achievements WHERE guild_id = ? AND user_id = ?`);
-
-    for(const category of Object.keys(POINTS)) {
+    for (const category of Object.keys(POINTS)) {
         stmts[`getLeaderboard${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
     }
-
     this.stmts = stmts;
   }
   
@@ -151,7 +175,6 @@ class PointsDatabase {
 
     this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategory, add: modAmount });
     this.stmts.logPoints.run(guildId, userId, category, modAmount, Date.now(), reason, notes);
-
     if (modAmount > 0) {
         this.updateStreak(guildId, userId);
         return this.checkAchievements(guildId, userId);
@@ -202,7 +225,7 @@ class PointsDatabase {
 }
 
 /* =========================
-   UTILITIES
+   UTILITIES & RENDERER
 ========================= */
 const formatNumber = (n) => (Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
@@ -256,8 +279,9 @@ function buildCommands() {
     const activityChoices = Object.keys(POINTS).map(key => ({ name: key.charAt(0).toUpperCase() + key.slice(1), value: key }));
     return [
         ...Object.entries(POINTS).map(([name, points]) => new SlashCommandBuilder().setName(name).setDescription(`💪 Claim +${points} for ${name}`)),
-        new SlashCommandBuilder().setName('walking').setDescription('🚶 Log walking by distance (0.5 points/km)').addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 2.5)').setMinValue(0.1).setRequired(true)),
-        new SlashCommandBuilder().setName('jogging').setDescription('🏃 Log jogging by distance (0.5 points/km)').addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 5)').setMinValue(0.1).setRequired(true)),
+        new SlashCommandBuilder().setName('walking').setDescription(`🚶 Log walking by distance (${DISTANCE_RATES.walking} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 2.5)').setMinValue(0.1).setRequired(true)),
+        new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging by distance (${DISTANCE_RATES.jogging} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 5)').setMinValue(0.1).setRequired(true)),
+        new SlashCommandBuilder().setName('running').setDescription(`💨 Log running by distance (${DISTANCE_RATES.running} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 3)').setMinValue(0.1).setRequired(true)),
         new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show your score, rank, and progress'),
         new SlashCommandBuilder().setName('leaderboard').setDescription('📊 Show the server leaderboard').addStringOption(o => o.setName('period').setDescription('Time period').setRequired(true).addChoices({ name: 'Today', value: 'day' }, { name: 'This Week', value: 'week' }, { name: 'This Month', value: 'month' }, { name: 'This Year', value: 'year' }, { name: 'All Time', value: 'all' })).addStringOption(o => o.setName('category').setDescription('Category to rank').addChoices({ name: 'All (total)', value: 'all' }, ...activityChoices, { name: 'Current Streak', value: 'streak' })),
         new SlashCommandBuilder().setName('junk').setDescription('🍕 Log junk food to deduct points').addStringOption(o => o.setName('item').setDescription('The junk food item').setRequired(true).addChoices(...Object.entries(DEDUCTIONS).map(([key, { emoji, label }]) => ({ name: `${emoji} ${label}`, value: key })))),
@@ -288,7 +312,7 @@ class CommandHandler {
         const embed = new EmbedBuilder().setColor(cur.color).setDescription(`**+${formatNumber(amount)}** points for **${category}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Current Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
         if (need > 0) embed.setFooter({ text: `Only ${formatNumber(need)} points to the next rank!` });
         
-        const replyPayload = { embeds: [embed] };
+        const replyPayload = { embeds: [embed], ephemeral: true };
         if (newAchievements.length > 0) {
             const achievementEmbed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement Unlocked!').setDescription(newAchievements.map(a => `**${a.name}**: ${a.description}`).join('\n'));
             replyPayload.embeds.push(achievementEmbed);
@@ -303,7 +327,7 @@ class CommandHandler {
         this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'total', amount: -deduction.points, reason: `junk:${item}` });
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
         const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${deduction.emoji} **-${formatNumber(deduction.points)}** points for **${item}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }).setThumbnail(user.displayAvatarURL());
-        return interaction.reply({ embeds: [embed] });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     async handleMyScore(interaction) {
@@ -315,7 +339,7 @@ class CommandHandler {
             { name: 'Total Points', value: formatNumber(userRow.total), inline: true },
             { name: 'Current Streak', value: `🔥 ${userRow.current_streak} days`, inline: true },
             { name: 'Progress to Next Rank', value: progressBar(pct), inline: false },
-            { name: 'Achievements', value: achievements.length > 0 ? achievements.map(id => ACHIEVEMENTS.find(a=>a.id===id)?.name || id).join(', ') : 'None yet!' }
+            { name: 'Achievements', value: achievements.length > 0 ? achievements.map(id => `**${ACHIEVEMENTS.find(a=>a.id===id)?.name || id}**`).join(', ') : 'None yet!' }
         );
         if (need > 0) embed.setFooter({ text: `${formatNumber(need)} points to the next rank!` });
         return interaction.reply({ embeds: [embed] });
@@ -419,7 +443,8 @@ async function main() {
         switch (commandName) {
           case 'walking':
           case 'jogging':
-            await handler.handleClaim(interaction, 'exercise', 'exercise', interaction.options.getNumber('km', true) * KM_POINT_RATE);
+          case 'running':
+            await handler.handleClaim(interaction, 'exercise', 'exercise', interaction.options.getNumber('km', true) * DISTANCE_RATES[commandName]);
             break;
           case 'junk': await handler.handleJunk(interaction); break;
           case 'myscore': await handler.handleMyScore(interaction); break;
