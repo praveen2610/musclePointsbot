@@ -442,32 +442,6 @@ const client = new Client({
 /* =========================
    PRETTY LEADERBOARD RENDER (Canvas)
 ========================= */
-function drawRoundedRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, h/2, w/2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
-function ellipsize(ctx, text, maxWidth) {
-  if (ctx.measureText(text).width <= maxWidth) return text;
-  let s = text;
-  while (s.length && ctx.measureText(s + "…").width > maxWidth) s = s.slice(0, -1);
-  return s + "…";
-}
-async function circleImage(ctx, url, x, y, size) {
-  const img = await loadImage(url);
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(x + size/2, y + size/2, size/2, 0, Math.PI*2);
-  ctx.closePath();
-  ctx.clip();
-  ctx.drawImage(img, x, y, size, size);
-  ctx.restore();
-}
 async function renderLeaderboardCard({ title, rows, client, guild, cat, period }) {
   const TOP_H = 120;
   const ROW_H_TOP = 96;
@@ -479,7 +453,14 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
 
-  // background gradient & subtle grid
+  // --- EFFICIENT DATA FETCHING ---
+  // 1. Get all user IDs from the leaderboard rows.
+  const userIds = rows.map(r => r.userId);
+  // 2. Fetch all guild members in a single, efficient API call.
+  // This gets server-specific info like nicknames.
+  const members = await guild.members.fetch({ user: userIds }).catch(() => new Map());
+
+  // Background gradient & subtle grid
   const bg = ctx.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, "#0f172a");
   bg.addColorStop(1, "#111827");
@@ -490,7 +471,7 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
   for (let y = 0; y < H; y += 32) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
   ctx.globalAlpha = 1;
 
-  // header card
+  // Header card
   const headerPad = 20;
   drawRoundedRect(ctx, headerPad, headerPad, W - headerPad*2, TOP_H - headerPad, 16);
   const headGrad = ctx.createLinearGradient(headerPad, headerPad, headerPad, TOP_H);
@@ -499,15 +480,15 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
   ctx.fillStyle = headGrad;
   ctx.fill();
 
-  // server icon
+  // Server icon
   if (guild.iconURL) {
     const iconURL = guild.iconURL({ extension: "png", size: 128 });
     try { await circleImage(ctx, iconURL, headerPad + 18, headerPad + 14, 72); } catch {}
   }
 
-  // category chip
+  // Category chip
   const CAT_EMOJI = { all: "🏆", gym: "🏋️", badminton: "🏸", cricket: "🏏", exercise: "🏃" };
-  const catText = `${CAT_EMOJI[cat] || "🏆"} ${(cat === "all" ? "Total" : cat)} • ${period}`;
+  const catText = `${CAT_EMOJI[cat] || "🏆"} ${cat.charAt(0).toUpperCase() + cat.slice(1)} • ${period.charAt(0).toUpperCase() + period.slice(1)}`;
   ctx.font = "600 16px sans-serif";
   const chipW = ctx.measureText(catText).width + 24;
   const chipX = W - headerPad - chipW - 8;
@@ -518,7 +499,7 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
   ctx.fillStyle = "#93c5fd";
   ctx.fillText(catText, chipX + 12, chipY + 19);
 
-  // title + subtitle
+  // Title + subtitle
   ctx.fillStyle = "#e5e7eb";
   ctx.font = "700 28px sans-serif";
   ctx.fillText(title, headerPad + 110, headerPad + 44);
@@ -526,13 +507,8 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
   ctx.font = "500 16px sans-serif";
   ctx.fillText(`${guild.name} • Top ${rows.length}`, headerPad + 110, headerPad + 70);
 
-  // rows
-  const medalCols = {
-    1: ["#f59e0b", "#fbbf24"],
-    2: ["#9ca3af", "#e5e7eb"],
-    3: ["#b45309", "#f59e0b"]
-  };
-
+  // Rows
+  const medalCols = { 1: ["#f59e0b", "#fbbf24"], 2: ["#9ca3af", "#e5e7eb"], 3: ["#b45309", "#f59e0b"] };
   let y = TOP_H + 8;
   for (let idx = 0; idx < rows.length; idx++) {
     const r = rows[idx];
@@ -540,7 +516,7 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
     const rowH = isTop ? ROW_H_TOP : ROW_H;
     const cardX = 20, cardW = W - 40;
 
-    // card bg
+    // Card bg
     drawRoundedRect(ctx, cardX, y, cardW, rowH, 14);
     if (idx < 3) {
       const g = ctx.createLinearGradient(cardX, y, cardX + cardW, y + rowH);
@@ -552,65 +528,70 @@ async function renderLeaderboardCard({ title, rows, client, guild, cat, period }
     }
     ctx.fill();
 
-    // left rank ribbon
+    // Left rank ribbon
     const ribbonW = 64;
     drawRoundedRect(ctx, cardX, y, ribbonW, rowH, 14);
     const ribGrad = ctx.createLinearGradient(cardX, y, cardX, y + rowH);
-    ribGrad.addColorStop(0, "#1f2937");
-    ribGrad.addColorStop(1, "#0b1220");
+    ribGrad.addColorStop(0, "#1f2937"); ribGrad.addColorStop(1, "#0b1220");
     ctx.fillStyle = ribGrad;
     ctx.fill();
 
-    // rank text
+    // Rank text
     ctx.fillStyle = idx < 3 ? medalCols[idx+1][0] : "#cbd5e1";
     ctx.font = isTop ? "800 28px sans-serif" : "800 22px sans-serif";
     const rankStr = `#${r.rank}`;
     const rW = ctx.measureText(rankStr).width;
     ctx.fillText(rankStr, cardX + ribbonW/2 - rW/2, y + (isTop ? 58 : 46));
 
-    // avatar + name
-    try {
-      const user = await client.users.fetch(r.userId);
-      const url = user.displayAvatarURL({ extension: "png", size: 256 });
-      const aSize = isTop ? 72 : 54;
-      const aX = cardX + ribbonW + 18;
-      const aY = y + (rowH/2 - aSize/2);
+    // --- Avatar + Name (from pre-fetched members map) ---
+    const member = members.get(r.userId);
+    const aSize = isTop ? 72 : 54;
+    const aX = cardX + ribbonW + 18;
+    const aY = y + (rowH/2 - aSize/2);
+    const nameX = aX + aSize + 18;
+    const nameMax = W - nameX - 160;
+
+    if (member) {
+      // Member found, draw their info
+      const url = member.user.displayAvatarURL({ extension: "png", size: 256 });
       await circleImage(ctx, url, aX, aY, aSize);
 
       ctx.fillStyle = "#e5e7eb";
       ctx.font = isTop ? "700 24px sans-serif" : "700 20px sans-serif";
-      const name = user.globalName || user.username;
-      const nameX = aX + aSize + 18;
-      const nameMax = W - nameX - 160;
-      ctx.fillText(ellipsize(ctx, name, nameMax), nameX, y + (isTop ? 44 : 34));
+      ctx.fillText(ellipsize(ctx, member.displayName, nameMax), nameX, y + (isTop ? 44 : 34));
 
       ctx.fillStyle = "#94a3b8";
       ctx.font = "500 14px sans-serif";
-      const handle = `@${user.username}`;
+      const handle = `@${member.user.username}`;
       ctx.fillText(ellipsize(ctx, handle, nameMax), nameX, y + (isTop ? 68 : 54));
-    } catch {
+    } else {
+      // Member not found (left server), draw a placeholder
+      ctx.beginPath();
+      ctx.arc(aX + aSize/2, aY + aSize/2, aSize/2, 0, Math.PI*2);
+      ctx.fillStyle = "#334155"; // Placeholder color
+      ctx.fill();
+
       ctx.fillStyle = "#e5e7eb";
-      ctx.font = isTop ? "700 24px sans-serif" : "700 20px sans-serif";
-      ctx.fillText("Unknown User", cardX + ribbonW + 110, y + (isTop ? 44 : 34));
+      ctx.font = isTop ? "600 22px sans-serif" : "600 18px sans-serif";
+      ctx.fillText("Unknown User", nameX, y + (rowH/2 + 8));
     }
 
-    // score pill (right)
+    // Score pill (right)
     const score = String(r.score);
     ctx.font = isTop ? "800 26px monospace" : "800 20px monospace";
     const sw = ctx.measureText(score).width + 28;
     const pillX = W - 24 - sw, pillY = y + (rowH/2 - 20);
     drawRoundedRect(ctx, pillX, pillY, sw, 40, 12);
     const pillGrad = ctx.createLinearGradient(pillX, pillY, pillX, pillY + 40);
-    pillGrad.addColorStop(0, "#10b981");
-    pillGrad.addColorStop(1, "#059669");
+    pillGrad.addColorStop(0, "#10b981"); pillGrad.addColorStop(1, "#059669");
     ctx.fillStyle = pillGrad; ctx.fill();
-    ctx.fillStyle = "#ffffff"; 
+    ctx.fillStyle = "#ffffff"; // Changed for visibility
     ctx.fillText(score, pillX + (sw - ctx.measureText(score).width)/2, pillY + 27);
 
     y += rowH + 10;
   }
 
-  // watermark
+  // Watermark
   ctx.fillStyle = "#475569";
   ctx.font = "500 12px sans-serif";
   ctx.fillText("Fitness Bot • leaderboard", 22, H - 12);
