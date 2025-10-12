@@ -321,53 +321,54 @@ class CommandHandler {
         return interaction.reply({ embeds: [embed] });
     }
 
-    async handleLeaderboard(interaction) {
-        const { guild, user, options } = interaction;
-        const period = options.getString('period');
-        const cat = options.getString('category') ?? 'all';
-        let rows = [], userRankRow = null, subtitle = '';
+ // Temporary replacement for handleLeaderboard to test data fetching
+async handleLeaderboard(interaction) {
+    await interaction.deferReply();
+    const { guild, user, options } = interaction;
+    const period = options.getString('period');
+    const cat = options.getString('category') ?? 'all';
 
-        try {
-            console.log(`📊 Leaderboard request: period=${period}, category=${cat}`);
-            
-            if (period === 'all') {
-                subtitle = cat === 'streak' ? 'All-Time Top Streaks' : `All-Time Top Players - ${cat === 'all' ? 'Overall' : cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-                if (cat === 'streak') {
-                    rows = this.db.stmts.getTopStreaks.all(guild.id);
-                } else if (cat === 'all') {
-                    rows = this.db.stmts.getLeaderboardAllTime.all(guild.id);
-                    userRankRow = this.db.stmts.getUserRankAllTime.get(guild.id, user.id);
-                    if (userRankRow) userRankRow.userId = user.id;
-                } else {
-                    const stmtKey = `getLeaderboard_${cat}`;
-                    if (this.db.stmts[stmtKey]) {
-                        rows = this.db.stmts[stmtKey].all(guild.id);
-                    }
-                }
+    let rows;
+    try {
+        if (period === 'all') {
+            if (cat === 'streak') {
+                rows = this.db.stmts.getTopStreaks.all(guild.id, 10);
+            } else if (cat === 'all') {
+                rows = this.db.stmts.getLeaderboardAllTime.all(guild.id);
             } else {
-                const periodName = { day: 'Today', week: 'This Week', month: 'This Month', year: 'This Year' }[period];
-                subtitle = cat === 'all' ? periodName : `${periodName} - ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-                if (cat === 'streak') {
-                    rows = this.db.stmts.getTopStreaks.all(guild.id);
-                } else {
-                    rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, getPeriodStart(period)) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, getPeriodStart(period), cat);
+                const stmtKey = `getLeaderboard_${cat}`;
+                if (this.db.stmts[stmtKey]) {
+                    rows = this.db.stmts[stmtKey].all(guild.id);
                 }
             }
-
-            if (!rows || rows.length === 0) {
-                return interaction.editReply({ content: '📊 No data available for this leaderboard yet! Start earning points to appear here.' });
-            }
-
-            rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
-
-            const imageBuffer = await renderLeaderboardCard({ title: 'Leaderboard', rows, guild, userRank: userRankRow, subtitle });
-            return interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' })] });
-        } catch (err) {
-            console.error("❌ Leaderboard render failed:", err);
-            return interaction.editReply({ content: `❌ Sorry, there was an error generating the leaderboard.` });
+        } else {
+            const since = getPeriodStart(period);
+            rows = cat === 'all' 
+                ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, since) 
+                : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, since, cat);
         }
-    }
 
+        if (!rows || rows.length === 0) {
+            return interaction.editReply({ content: '📊 No data available for this leaderboard yet!' });
+        }
+
+        const lines = rows.map((r, idx) => {
+            const score = r.score !== undefined ? r.score : r.total;
+            return `${idx + 1}. <@${r.userId || r.user_id}> - **${formatNumber(score)}**`;
+        });
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`🏆 Leaderboard - ${cat} (${period})`)
+            .setDescription(lines.join('\n'))
+            .setColor(0x3498db);
+
+        return interaction.editReply({ embeds: [embed] });
+
+    } catch (err) {
+        console.error("Error during TEXT leaderboard generation:", err);
+        return interaction.editReply({ content: `❌ A database error occurred: ${err.message}` });
+    }
+}
     async handleBuddy(interaction) {
         const { guild, user, options } = interaction;
         const targetUser = options.getUser('user');
