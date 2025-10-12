@@ -1,5 +1,6 @@
 // pointsbot.js - Professional Enhanced Version (FIXED)
 import 'dotenv/config';
+import http from 'node:http';
 import {
   Client, GatewayIntentBits, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits
@@ -224,7 +225,17 @@ function getPeriodStart(period = 'week') {
             return new Date(now.setDate(diff)).setHours(0, 0, 0, 0);
     }
 }
-
+/* =========================
+   KEEP-ALIVE SERVER
+========================= */
+function createKeepAliveServer() {
+  http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is alive and running.');
+  }).listen(process.env.PORT || 3000, () => {
+    console.log('✅ Keep-alive server started.');
+  });
+}
 async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = null }) {
     const userIds = [...rows.map(r => r.userId)];
     if (userRank) userIds.push(userRank.userId);
@@ -412,6 +423,7 @@ class CommandHandler {
    MAIN BOT INITIALIZATION (FIXED)
 ========================= */
 async function main() {
+  createKeepAliveServer();
   if (!CONFIG.token || !CONFIG.appId) {
     console.error('❌ Missing required environment variables: DISCORD_TOKEN and APPLICATION_ID');
     process.exit(1);
