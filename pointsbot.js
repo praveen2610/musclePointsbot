@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Enhanced Version
+// pointsbot.js - Professional Enhanced Version (FIXED)
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, REST, Routes,
@@ -20,7 +20,6 @@ const CONFIG = {
   token: (process.env.DISCORD_TOKEN || '').trim(),
   devGuildId: (process.env.DEV_GUILD_ID || '').trim(),
   dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
-  adminRoleNames: (process.env.ADMIN_ROLES || 'Admin,Moderator').split(',').map(r => r.trim()),
 };
 
 const COOLDOWNS = {
@@ -49,20 +48,11 @@ const DISTANCE_RATES = {
 
 const DEDUCTIONS = {
   chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
-  fries:     { points: 3, emoji: '🍟', label: 'Fries' },
-  soda:      { points: 2, emoji: '🥤', label: 'Soda' },
-  pizza:     { points: 4, emoji: '🍕', label: 'Pizza' },
-  burger:    { points: 3, emoji: '🍔', label: 'Burger' },
-  sweets:    { points: 2, emoji: '🍬', label: 'Sweets' },
-  icecream:  { points: 2, emoji: '🍦', label: 'Ice Cream' },
-  cake:      { points: 3, emoji: '🍰', label: 'Cake' },
-  
-  // --- New Indian Junk Food Options ---
-  samosa:    { points: 3, emoji: '🥟', label: 'Samosa' },
-  parotta:   { points: 4, emoji: '🫓', label: 'Parotta' },
-  vada_pav:  { points: 3, emoji: '🍔', label: 'Vada Pav' },
-  pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri' },
-  jalebi:    { points: 3, emoji: '🍥', label: 'Jalebi' },
+  fries: { points: 3, emoji: '🍟', label: 'Fries' },
+  soda: { points: 2, emoji: '🥤', label: 'Soda' },
+  pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
+  burger: { points: 3, emoji: '🍔', label: 'Burger' },
+  sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
 };
 
 const RANKS = [
@@ -98,7 +88,6 @@ class PointsDatabase {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
-    this.runMigrations();
     this.prepareStatements();
   }
 
@@ -121,34 +110,6 @@ class PointsDatabase {
     `);
   }
   
-  runMigrations() {
-    const tableInfo = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='points'`).get();
-    if (!tableInfo) return;
-
-    const columns = this.db.prepare(`PRAGMA table_info(points)`).all();
-    if (columns.some(col => col.name === 'swimming')) return;
-
-    console.log("MIGRATION: 'points' table is outdated. Applying updates...");
-    const migrate = this.db.transaction(() => {
-      const data = this.db.prepare('SELECT * FROM points').all();
-      this.db.exec('ALTER TABLE points RENAME TO points_old');
-      this.initSchema();
-      const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`);
-      for (const user of data) {
-        insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null });
-      }
-      this.db.exec('DROP TABLE points_old');
-    });
-
-    try {
-      migrate();
-      console.log("MIGRATION: Successfully updated 'points' table schema.");
-    } catch (err) {
-      console.error("MIGRATION: Failed! Rolling back.", err);
-      this.db.exec('DROP TABLE points; ALTER TABLE points_old RENAME TO points;');
-    }
-  }
-
   prepareStatements() {
     const stmts = {};
     stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
@@ -167,9 +128,11 @@ class PointsDatabase {
     stmts.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
     stmts.unlockAchievement = this.db.prepare(`INSERT OR IGNORE INTO achievements (guild_id, user_id, achievement_id) VALUES (?, ?, ?)`),
     stmts.getUserAchievements = this.db.prepare(`SELECT achievement_id FROM achievements WHERE guild_id = ? AND user_id = ?`);
+
     for(const category of Object.keys(POINTS)) {
-        stmts[`getLeaderboard${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
+        stmts[`getLeaderboard_${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
     }
+
     this.stmts = stmts;
   }
   
@@ -186,6 +149,7 @@ class PointsDatabase {
 
     this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategory, add: modAmount });
     this.stmts.logPoints.run(guildId, userId, category, modAmount, Date.now(), reason, notes);
+
     if (modAmount > 0) {
         this.updateStreak(guildId, userId);
         return this.checkAchievements(guildId, userId);
@@ -260,6 +224,7 @@ function getPeriodStart(period = 'week') {
             return new Date(now.setDate(diff)).setHours(0, 0, 0, 0);
     }
 }
+
 async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = null }) {
     const userIds = [...rows.map(r => r.userId)];
     if (userRank) userIds.push(userRank.userId);
@@ -279,7 +244,7 @@ async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = 
     }
     const guildIcon = guild.iconURL({ extension: 'png', size: 256 });
     const finalSubtitle = subtitle || `Top ${rows.length} Players`;
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8" /><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%);color:#e2e8f0;width:900px;padding:40px;-webkit-font-smoothing:antialiased;}.card{background:linear-gradient(180deg, #1e293b 0%, #0f172a 100%);border-radius:24px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);border:1px solid rgba(148,163,184,0.1);}.header{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);padding:32px;display:flex;align-items:center;gap:20px;border-bottom:3px solid rgba(59,130,246,0.3);}.guild-icon{width:72px;height:72px;border-radius:20px;box-shadow:0 10px 25px rgba(0,0,0,0.3);border:3px solid rgba(255,255,255,0.2);}.header-text{flex:1;}.title{font-size:32px;font-weight:900;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,0.3);letter-spacing:-.5px;margin-bottom:4px;}.subtitle{font-size:16px;color:rgba(255,255,255,0.9);font-weight:500;text-transform:uppercase;letter-spacing:1px;}.leaderboard-content{padding:8px;}.row{display:flex;align-items:center;gap:16px;padding:16px 24px;margin:8px 0;background:rgba(30,41,59,0.5);border-radius:16px;transition:all .3s ease;border:1px solid transparent;}.row.top3{background:linear-gradient(135deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%);border:1px solid rgba(59,130,246,0.3);}.rank-badge{min-width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;border-radius:12px;background:rgba(71,85,105,0.5);color:#94a3b8;border:2px solid rgba(148,163,184,0.2);}.rank-badge.gold{background:linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);color:#78350f;box-shadow:0 4px 15px rgba(251,191,36,0.4);border-color:#fde047;}.rank-badge.silver{background:linear-gradient(135deg, #e5e7eb 0%, #d1d5db 100%);color:#374151;box-shadow:0 4px 15px rgba(229,231,235,0.4);border-color:#f3f4f6;}.rank-badge.bronze{background:linear-gradient(135deg, #f97316 0%, #ea580c 100%);color:#7c2d12;box-shadow:0 4px 15px rgba(249,115,22,0.4);border-color:#fb923c;}.avatar{width:56px;height:56px;border-radius:50%;border:3px solid rgba(148,163,184,0.3);box-shadow:0 4px 12px rgba(0,0,0,0.3);}.top3 .avatar{border-color:rgba(59,130,246,0.6);box-shadow:0 4px 20px rgba(59,130,246,0.4);}.user-info{flex:1;min-width:0;}.name{font-weight:700;font-size:18px;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}.user-tag{font-size:13px;color:#94a3b8;font-weight:500;}.score{font-weight:900;font-size:24px;background:linear-gradient(135deg, #10b981 0%, #059669 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;min-width:80px;text-align:right;text-shadow:0 2px 10px rgba(16,185,129,0.3);}.row.self{margin-top:16px;background:linear-gradient(135deg, rgba(59,130,246,0.2) 0%, rgba(139,92,246,0.2) 100%);border:2px solid #3b82f6;box-shadow:0 8px 20px rgba(59,130,246,0.3);}.rank-badge.self-badge{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);color:#fff;border-color:#60a5fa;}</style></head><body><div class="card"><div class="header">${guildIcon ? `<img src="${guildIcon}" class="guild-icon" alt="Server Icon" />` : ''}<div class="header-text"><h1 class="title">${title}</h1><div class="subtitle">${finalSubtitle} • ${guild.name}</div></div></div><div class="leaderboard-content">${userRows.map(u => `<div class="row ${u.rank <= 3 ? 'top3' : ''}"><div class="rank-badge ${u.rank === 1 ? 'gold' : u.rank === 2 ? 'silver' : u.rank === 3 ? 'bronze' : ''}">#${u.rank}</div><div class="avatar-container"><img class="avatar" src="${u.avatarUrl}" alt="${u.displayName}" /></div><div class="user-info"><div class="name">${u.displayName}</div><div class="user-tag">Rank #${u.rank}</div></div><div class="score">${u.score}</div></div>`).join('')}${userRankHtml}</div></div></body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8" /><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%);color:#e2e8f0;width:900px;padding:40px;-webkit-font-smoothing:antialiased;}.card{background:linear-gradient(180deg, #1e293b 0%, #0f172a 100%);border-radius:24px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);border:1px solid rgba(148,163,184,0.1);}.header{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);padding:32px;display:flex;align-items:center;gap:20px;border-bottom:3px solid rgba(59,130,246,0.3);}.guild-icon{width:72px;height:72px;border-radius:20px;box-shadow:0 10px 25px rgba(0,0,0,0.3);border:3px solid rgba(255,255,255,0.2);}.header-text{flex:1;}.title{font-size:32px;font-weight:900;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,0.3);letter-spacing:-.5px;margin-bottom:4px;}.subtitle{font-size:16px;color:rgba(255,255,255,0.9);font-weight:500;text-transform:uppercase;letter-spacing:1px;}.leaderboard-content{padding:8px;}.row{display:flex;align-items:center;gap:16px;padding:16px 24px;margin:8px 0;background:rgba(30,41,59,0.5);border-radius:16px;transition:all .3s ease;border:1px solid transparent;}.row.top3{background:linear-gradient(135deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%);border:1px solid rgba(59,130,246,0.3);}.rank-badge{min-width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;border-radius:12px;background:rgba(71,85,105,0.5);color:#94a3b8;border:2px solid rgba(148,163,184,0.2);}.rank-badge.gold{background:linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);color:#78350f;box-shadow:0 4px 15px rgba(251,191,36,0.4);border-color:#fde047;}.rank-badge.silver{background:linear-gradient(135deg, #e5e7eb 0%, #d1d5db 100%);color:#374151;box-shadow:0 4px 15px rgba(229,231,235,0.4);border-color:#f3f4f6;}.rank-badge.bronze{background:linear-gradient(135deg, #f97316 0%, #ea580c 100%);color:#7c2d12;box-shadow:0 4px 15px rgba(249,115,22,0.4);border-color:#fb923c;}.avatar{width:56px;height:56px;border-radius:50%;border:3px solid rgba(148,163,184,0.3);box-shadow:0 4px 12px rgba(0,0,0,0.3);}.top3 .avatar{border-color:rgba(59,130,246,0.6);box-shadow:0 4px 20px rgba(59,130,246,0.4);}.user-info{flex:1;min-width:0;}.name{font-weight:700;font-size:18px;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}.user-tag{font-size:13px;color:#94a3b8;font-weight:500;}.score{font-weight:900;font-size:24px;background:linear-gradient(135deg, #10b981 0%, #059669 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;min-width:80px;text-align:right;}.row.self{margin-top:16px;background:linear-gradient(135deg, rgba(59,130,246,0.2) 0%, rgba(139,92,246,0.2) 100%);border:2px solid #3b82f6;box-shadow:0 8px 20px rgba(59,130,246,0.3);}.rank-badge.self-badge{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);color:#fff;border-color:#60a5fa;}</style></head><body><div class="card"><div class="header">${guildIcon ? `<img src="${guildIcon}" class="guild-icon" alt="Server Icon" />` : ''}<div class="header-text"><h1 class="title">${title}</h1><div class="subtitle">${finalSubtitle} • ${guild.name}</div></div></div><div class="leaderboard-content">${userRows.map(u => `<div class="row ${u.rank <= 3 ? 'top3' : ''}"><div class="rank-badge ${u.rank === 1 ? 'gold' : u.rank === 2 ? 'silver' : u.rank === 3 ? 'bronze' : ''}">#${u.rank}</div><div class="avatar-container"><img class="avatar" src="${u.avatarUrl}" alt="${u.displayName}" /></div><div class="user-info"><div class="name">${u.displayName}</div><div class="user-tag">Rank #${u.rank}</div></div><div class="score">${u.score}</div></div>`).join('')}${userRankHtml}</div></div></body></html>`;
     return nodeHtmlToImage({ html, puppeteerArgs: { args: ['--no-sandbox', '--disable-setuid-sandbox'] } });
 }
 
@@ -337,7 +302,7 @@ class CommandHandler {
         const deduction = DEDUCTIONS[item];
         this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'total', amount: -deduction.points, reason: `junk:${item}` });
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${deduction.emoji} **-${formatNumber(deduction.points)}** points for **${item}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }).setThumbnail(user.displayAvatarURL());
+        const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${deduction.emoji} **-${formatNumber(deduction.points)}** points for **${deduction.label}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }).setThumbnail(user.displayAvatarURL());
         return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
@@ -348,7 +313,7 @@ class CommandHandler {
         const achievements = this.db.stmts.getUserAchievements.all(guild.id, user.id).map(r => r.achievement_id);
         const embed = new EmbedBuilder().setColor(cur.color).setAuthor({ name: user.displayName, iconURL: user.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields(
             { name: 'Total Points', value: formatNumber(userRow.total), inline: true },
-            { name: 'Current Streak', value: `🔥 ${userRow.current_streak} days`, inline: true },
+            { name: 'Current Streak', value: `🔥 ${userRow.current_streak || 0} days`, inline: true },
             { name: 'Progress to Next Rank', value: progressBar(pct), inline: false },
             { name: 'Achievements', value: achievements.length > 0 ? achievements.map(id => `**${ACHIEVEMENTS.find(a=>a.id===id)?.name || id}**`).join(', ') : 'None yet!' }
         );
@@ -357,33 +322,49 @@ class CommandHandler {
     }
 
     async handleLeaderboard(interaction) {
-        await interaction.deferReply();
         const { guild, user, options } = interaction;
         const period = options.getString('period');
         const cat = options.getString('category') ?? 'all';
-        let rows, userRankRow = null, subtitle = `Top ${cat === 'streak' ? 'Streaks' : 'Players'}`;
+        let rows = [], userRankRow = null, subtitle = '';
 
         try {
+            console.log(`📊 Leaderboard request: period=${period}, category=${cat}`);
+            
             if (period === 'all') {
+                subtitle = cat === 'streak' ? 'All-Time Top Streaks' : `All-Time Top Players - ${cat === 'all' ? 'Overall' : cat.charAt(0).toUpperCase() + cat.slice(1)}`;
                 if (cat === 'streak') {
-                    rows = this.db.stmts.getTopStreaks.all(guild.id, 10);
+                    rows = this.db.stmts.getTopStreaks.all(guild.id);
                 } else if (cat === 'all') {
                     rows = this.db.stmts.getLeaderboardAllTime.all(guild.id);
                     userRankRow = this.db.stmts.getUserRankAllTime.get(guild.id, user.id);
                     if (userRankRow) userRankRow.userId = user.id;
                 } else {
-                    rows = this.db.stmts[`getLeaderboard${cat}`].all(guild.id, 10);
+                    const stmtKey = `getLeaderboard_${cat}`;
+                    if (this.db.stmts[stmtKey]) {
+                        rows = this.db.stmts[stmtKey].all(guild.id);
+                    }
                 }
             } else {
-                rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, getPeriodStart(period)) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, getPeriodStart(period), cat);
+                const periodName = { day: 'Today', week: 'This Week', month: 'This Month', year: 'This Year' }[period];
+                subtitle = cat === 'all' ? periodName : `${periodName} - ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
+                if (cat === 'streak') {
+                    rows = this.db.stmts.getTopStreaks.all(guild.id);
+                } else {
+                    rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, getPeriodStart(period)) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, getPeriodStart(period), cat);
+                }
             }
+
+            if (!rows || rows.length === 0) {
+                return interaction.editReply({ content: '📊 No data available for this leaderboard yet! Start earning points to appear here.' });
+            }
+
             rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
 
             const imageBuffer = await renderLeaderboardCard({ title: 'Leaderboard', rows, guild, userRank: userRankRow, subtitle });
             return interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' })] });
         } catch (err) {
-            console.error("Leaderboard render failed:", err);
-            return interaction.editReply({ content: '❌ Sorry, there was an error generating the leaderboard.' });
+            console.error("❌ Leaderboard render failed:", err);
+            return interaction.editReply({ content: `❌ Sorry, there was an error generating the leaderboard.` });
         }
     }
 
@@ -409,14 +390,15 @@ class CommandHandler {
 
         if (subcommand === 'award') {
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount, reason: 'admin:award', notes: reason });
-            return interaction.reply({ content: `✅ Awarded ${formatNumber(amount)} ${category} points to <@${targetUser.id}>.`, ephemeral: true });
+            return interaction.editReply({ content: `✅ Awarded ${formatNumber(amount)} ${category} points to <@${targetUser.id}>.` });
         }
         if (subcommand === 'deduct') {
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount: -amount, reason: 'admin:deduct', notes: reason });
-            return interaction.reply({ content: `✅ Deducted ${formatNumber(amount)} ${category} points from <@${targetUser.id}>.`, ephemeral: true });
+            return interaction.editReply({ content: `✅ Deducted ${formatNumber(amount)} ${category} points from <@${targetUser.id}>.` });
         }
     }
 }
+
 /* =========================
    MAIN BOT INITIALIZATION
 ========================= */
@@ -431,6 +413,7 @@ async function main() {
 
   const rest = new REST({ version: '10' }).setToken(CONFIG.token);
   try {
+    console.log('🔄 Registering slash commands...');
     const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId);
     await rest.put(route, { body: buildCommands() });
     console.log('✅ Registered slash commands.');
@@ -441,18 +424,20 @@ async function main() {
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-  client.on('ready', () => console.log(`🤖 Logged in as ${client.user.tag}`));
+  client.on('ready', () => {
+    console.log(`🤖 Logged in as ${client.user.tag}`);
+    console.log(`📊 Serving ${client.guilds.cache.size} server(s)`);
+  });
+
   client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || !interaction.guild) return;
     const { commandName } = interaction;
 
-    // --- Defer Replies for Slow Commands ---
-    // Defer any command that might take longer than 3 seconds.
-    if (commandName === 'leaderboard' || commandName === 'admin') {
-      await interaction.deferReply({ ephemeral: commandName === 'admin' });
-    }
-
     try {
+      if (['leaderboard', 'admin'].includes(commandName)) {
+        await interaction.deferReply({ ephemeral: commandName === 'admin' });
+      }
+
       const claimCategories = Object.keys(POINTS);
       if (claimCategories.includes(commandName)) {
         await handler.handleClaim(interaction, commandName, commandName);
@@ -471,20 +456,22 @@ async function main() {
         }
       }
     } catch (err) {
-      console.error(`Error handling command ${commandName}:`, err);
-      const reply = { content: '❌ An error occurred while processing your command.', ephemeral: true };
-      
-      // Use editReply if we deferred, otherwise use reply
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(reply);
-      } else {
-        await interaction.reply(reply);
-      }
+      console.error(`❌ Error handling command ${commandName}:`, err);
+      const reply = { content: `❌ An error occurred while processing your command.`, ephemeral: true };
+      if (interaction.deferred || interaction.replied) await interaction.editReply(reply).catch(console.error);
+      else await interaction.reply(reply).catch(console.error);
     }
   });
 
   process.on('SIGINT', () => {
-    console.log('SIGINT received, shutting down gracefully.');
+    console.log('\n🛑 SIGINT received, shutting down gracefully...');
+    database.close();
+    client.destroy();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('\n🛑 SIGTERM received, shutting down gracefully...');
     database.close();
     client.destroy();
     process.exit(0);
@@ -494,6 +481,6 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error('Fatal error in main execution:', err);
+  console.error('❌ Fatal error in main execution:', err);
   process.exit(1);
 });
