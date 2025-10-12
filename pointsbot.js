@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Final Version (FIXED)
+// pointsbot.js - Professional Enhanced Version (FIXED)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -23,28 +23,208 @@ const CONFIG = {
   dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
 };
 
-// ... (The rest of your constants: COOLDOWNS, POINTS, etc. remain the same)
-const COOLDOWNS = { gym: 12 * 60 * 60 * 1000, badminton: 12 * 60 * 60 * 1000, cricket: 12 * 60 * 60 * 1000, exercise: 6 * 60 * 60 * 1000, swimming: 12 * 60 * 60 * 1000, yoga: 12 * 60 * 60 * 1000 };
-const POINTS = { gym: 2, badminton: 5, cricket: 5, exercise: 1, swimming: 3, yoga: 2 };
-const DISTANCE_RATES = { walking: 0.5, jogging: 0.6, running: 0.7 };
-const DEDUCTIONS = { chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' }, fries: { points: 3, emoji: '🍟', label: 'Fries' }, soda: { points: 2, emoji: '🥤', label: 'Soda' }, pizza: { points: 4, emoji: '🍕', label: 'Pizza' }, burger: { points: 3, emoji: '🍔', label: 'Burger' }, sweets: { points: 2, emoji: '🍬', label: 'Sweets' } };
-const RANKS = [ { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 }, { min: 20, name: "🌟 Beginner", color: 0x3498db, next: 50 }, { min: 50, name: "💪 Athlete", color: 0x9b59b6, next: 100 }, { min: 100, name: "🥉 Pro", color: 0xf39c12, next: 200 }, { min: 200, name: "🥈 Expert", color: 0xe67e22, next: 350 }, { min: 350, name: "🥇 Champion", color: 0xf1c40f, next: 500 }, { min: 500, name: "🏆 Legend", color: 0xe74c3c, next: 1000 }, { min: 1000, name: "👑 Godlike", color: 0x8e44ad, next: null } ];
-const ACHIEVEMENTS = [ { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn your first point' }, { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' }, { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' }, { id: 'streak_7', name: '🔥 Week Warrior', requirement: (stats) => stats.current_streak >= 7, description: 'Maintain a 7-day streak' }, { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' } ];
+const COOLDOWNS = {
+  gym: 12 * 60 * 60 * 1000,
+  badminton: 12 * 60 * 60 * 1000,
+  cricket: 12 * 60 * 60 * 1000,
+  exercise: 6 * 60 * 60 * 1000,
+  swimming: 12 * 60 * 60 * 1000,
+  yoga: 12 * 60 * 60 * 1000,
+};
+
+const POINTS = { 
+  gym: 2, 
+  badminton: 5, 
+  cricket: 5, 
+  exercise: 1,
+  swimming: 3,
+  yoga: 2,
+};
+
+const DISTANCE_RATES = {
+  walking: 0.5,
+  jogging: 0.6,
+  running: 0.7,
+};
+
+const DEDUCTIONS = {
+  chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
+  fries: { points: 3, emoji: '🍟', label: 'Fries' },
+  soda: { points: 2, emoji: '🥤', label: 'Soda' },
+  pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
+  burger: { points: 3, emoji: '🍔', label: 'Burger' },
+  sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
+  icecream:  { points: 2, emoji: '🍦', label: 'Ice Cream' },
+  cake:      { points: 3, emoji: '🍰', label: 'Cake' },
+  samosa:    { points: 3, emoji: '🥟', label: 'Samosa' },
+  parotta:   { points: 4, emoji: '🫓', label: 'Parotta' },
+  vada_pav:  { points: 3, emoji: '🍔', label: 'Vada Pav' },
+  pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri' },
+  jalebi:    { points: 3, emoji: '🍥', label: 'Jalebi' },
+};
+
+const RANKS = [
+  { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 },
+  { min: 20, name: "🌟 Beginner", color: 0x3498db, next: 50 },
+  { min: 50, name: "💪 Athlete", color: 0x9b59b6, next: 100 },
+  { min: 100, name: "🥉 Pro", color: 0xf39c12, next: 200 },
+  { min: 200, name: "🥈 Expert", color: 0xe67e22, next: 350 },
+  { min: 350, name: "🥇 Champion", color: 0xf1c40f, next: 500 },
+  { min: 500, name: "🏆 Legend", color: 0xe74c3c, next: 1000 },
+  { min: 1000, name: "👑 Godlike", color: 0x8e44ad, next: null }
+];
+
+const ACHIEVEMENTS = [
+  { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn your first point' },
+  { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' },
+  { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' },
+  { id: 'streak_7', name: '🔥 Week Warrior', requirement: (stats) => stats.current_streak >= 7, description: 'Maintain a 7-day streak' },
+  { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' },
+];
 
 /* =========================
    DATABASE CLASS
 ========================= */
 class PointsDatabase {
-  // ... (The entire PointsDatabase class is correct and does not need to change)
-  constructor(dbPath) { try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (err) { if (err.code !== 'EEXIST') console.error('Failed to create DB directory:', err); } this.db = new Database(dbPath); this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.initSchema(); this.runMigrations(); this.prepareStatements(); }
-  initSchema() { this.db.exec(` CREATE TABLE IF NOT EXISTS points ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0, exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) ); CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) ); CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT ); CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) ); CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) ); CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts); CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC); `); }
-  runMigrations() { const tableInfo = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='points'`).get(); if (!tableInfo) return; const columns = this.db.prepare(`PRAGMA table_info(points)`).all(); if (columns.some(col => col.name === 'swimming')) return; console.log("MIGRATION: 'points' table is outdated. Applying updates..."); const migrate = this.db.transaction(() => { const data = this.db.prepare('SELECT * FROM points').all(); this.db.exec('ALTER TABLE points RENAME TO points_old'); this.initSchema(); const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`); for (const user of data) { insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null }); } this.db.exec('DROP TABLE points_old'); }); try { migrate(); console.log("MIGRATION: Successfully updated 'points' table schema."); } catch (err) { console.error("MIGRATION: Failed! Rolling back.", err); this.db.exec('DROP TABLE points; ALTER TABLE points_old RENAME TO points;'); } }
-  prepareStatements() { const stmts = {}; stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`); stmts.addPoints = this.db.prepare(`UPDATE points SET total = total + @add, gym = CASE WHEN @category = 'gym' THEN gym + @add ELSE gym END, badminton = CASE WHEN @category = 'badminton' THEN badminton + @add ELSE badminton END, cricket = CASE WHEN @category = 'cricket' THEN cricket + @add ELSE cricket END, exercise = CASE WHEN @category = 'exercise' THEN exercise + @add ELSE exercise END, swimming = CASE WHEN @category = 'swimming' THEN swimming + @add ELSE swimming END, yoga = CASE WHEN @category = 'yoga' THEN yoga + @add ELSE yoga END, updated_at = strftime('%s', 'now') WHERE guild_id = @guild_id AND user_id = @user_id`); stmts.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`); stmts.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`); stmts.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`); stmts.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`); stmts.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`), stmts.getUserRankAllTime = this.db.prepare(`WITH Ranks AS (SELECT user_id, RANK() OVER (ORDER BY total DESC) as rank, total as score FROM points WHERE guild_id = ?) SELECT rank, score FROM Ranks WHERE user_id = ?`); stmts.getLeaderboardAllTime = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id = ? AND total > 0 ORDER BY total DESC LIMIT 10`); stmts.getLeaderboardPeriodic = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`); stmts.getLeaderboardPeriodicCategory = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND category = ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`); stmts.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`); stmts.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`); stmts.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`); stmts.unlockAchievement = this.db.prepare(`INSERT OR IGNORE INTO achievements (guild_id, user_id, achievement_id) VALUES (?, ?, ?)`), stmts.getUserAchievements = this.db.prepare(`SELECT achievement_id FROM achievements WHERE guild_id = ? AND user_id = ?`); for(const category of Object.keys(POINTS)) { stmts[`getLeaderboard_${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`); } this.stmts = stmts; }
-  modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) { this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId }); const modAmount = Number(amount) || 0; if (modAmount === 0) return []; let targetCategory = category; if (modAmount < 0 && category === 'total') { const userPoints = this.stmts.getUser.get(guildId, userId) || {}; targetCategory = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise'; } this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategory, add: modAmount }); this.stmts.logPoints.run(guildId, userId, category, modAmount, Date.now(), reason, notes); if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); } return []; }
-  updateStreak(guildId, userId) { const user = this.stmts.getUser.get(guildId, userId); if (!user) return; const today = new Date().toISOString().split('T')[0]; const lastDate = user.last_activity_date; if (lastDate === today) return; const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0]; const currentStreak = lastDate === yesterday ? (user.current_streak || 0) + 1 : 1; const longestStreak = Math.max(user.longest_streak || 0, currentStreak); this.stmts.updateStreak.run({ guild_id: guildId, user_id: userId, current_streak: currentStreak, longest_streak: longestStreak, last_activity_date: today }); }
-  checkCooldown({ guildId, userId, category }) { const row = this.stmts.getCooldown.get(guildId, userId, category); const now = Date.now(); const cooldownMs = COOLDOWNS[category]; if (row && now - row.last_ms < cooldownMs) return cooldownMs - (now - row.last_ms); return 0; }
-  commitCooldown({ guildId, userId, category }) { this.stmts.setCooldown.run({ guild_id: guildId, user_id: userId, category, last_ms: Date.now() }); }
-  checkAchievements(guildId, userId) { const user = this.stmts.getUser.get(guildId, userId); if (!user) return []; const unlocked = this.stmts.getUserAchievements.all(guildId, userId).map(r => r.achievement_id); const newAchievements = []; for (const achievement of ACHIEVEMENTS) { if (!unlocked.includes(achievement.id) && achievement.requirement(user)) { this.stmts.unlockAchievement.run(guildId, userId, achievement.id); newAchievements.push(achievement); } } return newAchievements; }
+  constructor(dbPath) {
+    try {
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    } catch (err) {
+      if (err.code !== 'EEXIST') console.error('Failed to create DB directory:', err);
+    }
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
+    this.initSchema();
+    this.runMigrations();
+    this.prepareStatements();
+  }
+
+  initSchema() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS points (
+        guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
+        gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
+        exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0,
+        current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
+        created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        PRIMARY KEY (guild_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
+      CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT );
+      CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
+      CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) );
+      CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
+      CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
+    `);
+  }
+  
+  runMigrations() {
+    const tableInfo = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='points'`).get();
+    if (!tableInfo) return;
+    const columns = this.db.prepare(`PRAGMA table_info(points)`).all();
+    if (columns.some(col => col.name === 'swimming')) return;
+
+    console.log("MIGRATION: 'points' table is outdated. Applying updates...");
+    const migrate = this.db.transaction(() => {
+      const data = this.db.prepare('SELECT * FROM points').all();
+      this.db.exec('ALTER TABLE points RENAME TO points_old');
+      this.initSchema();
+      const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`);
+      for (const user of data) {
+        insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null });
+      }
+      this.db.exec('DROP TABLE points_old');
+    });
+    try {
+      migrate();
+      console.log("MIGRATION: Successfully updated 'points' table schema.");
+    } catch (err) {
+      console.error("MIGRATION: Failed! Rolling back.", err);
+      this.db.exec('DROP TABLE points; ALTER TABLE points_old RENAME TO points;');
+    }
+  }
+
+  prepareStatements() {
+    const stmts = {};
+    stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
+    stmts.addPoints = this.db.prepare(`UPDATE points SET total = total + @add, gym = CASE WHEN @category = 'gym' THEN gym + @add ELSE gym END, badminton = CASE WHEN @category = 'badminton' THEN badminton + @add ELSE badminton END, cricket = CASE WHEN @category = 'cricket' THEN cricket + @add ELSE cricket END, exercise = CASE WHEN @category = 'exercise' THEN exercise + @add ELSE exercise END, swimming = CASE WHEN @category = 'swimming' THEN swimming + @add ELSE swimming END, yoga = CASE WHEN @category = 'yoga' THEN yoga + @add ELSE yoga END, updated_at = strftime('%s', 'now') WHERE guild_id = @guild_id AND user_id = @user_id`);
+    stmts.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
+    stmts.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
+    stmts.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
+    stmts.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
+    stmts.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+    stmts.getUserRankAllTime = this.db.prepare(`WITH Ranks AS (SELECT user_id, RANK() OVER (ORDER BY total DESC) as rank, total as score FROM points WHERE guild_id = ?) SELECT rank, score FROM Ranks WHERE user_id = ?`);
+    stmts.getLeaderboardAllTime = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id = ? AND total > 0 ORDER BY total DESC LIMIT 10`);
+    stmts.getLeaderboardPeriodic = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`);
+    stmts.getLeaderboardPeriodicCategory = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND category = ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`);
+    stmts.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
+    stmts.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`);
+    stmts.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
+    stmts.unlockAchievement = this.db.prepare(`INSERT OR IGNORE INTO achievements (guild_id, user_id, achievement_id) VALUES (?, ?, ?)`),
+    stmts.getUserAchievements = this.db.prepare(`SELECT achievement_id FROM achievements WHERE guild_id = ? AND user_id = ?`);
+    for(const category of Object.keys(POINTS)) {
+        stmts[`getLeaderboard_${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
+    }
+    this.stmts = stmts;
+  }
+  
+  modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
+    this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
+    const modAmount = Number(amount) || 0;
+    if (modAmount === 0) return [];
+    let targetCategory = category;
+    if (modAmount < 0 && category === 'total') {
+      const userPoints = this.stmts.getUser.get(guildId, userId) || {};
+      targetCategory = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
+    }
+    this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategory, add: modAmount });
+    this.stmts.logPoints.run(guildId, userId, category, modAmount, Date.now(), reason, notes);
+    if (modAmount > 0) {
+        this.updateStreak(guildId, userId);
+        return this.checkAchievements(guildId, userId);
+    }
+    return [];
+  }
+
+  updateStreak(guildId, userId) {
+    const user = this.stmts.getUser.get(guildId, userId);
+    if (!user) return;
+    const today = new Date().toISOString().split('T')[0];
+    const lastDate = user.last_activity_date;
+    if (lastDate === today) return;
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const currentStreak = lastDate === yesterday ? (user.current_streak || 0) + 1 : 1;
+    const longestStreak = Math.max(user.longest_streak || 0, currentStreak);
+    this.stmts.updateStreak.run({ guild_id: guildId, user_id: userId, current_streak: currentStreak, longest_streak: longestStreak, last_activity_date: today });
+  }
+
+  checkCooldown({ guildId, userId, category }) {
+    const row = this.stmts.getCooldown.get(guildId, userId, category);
+    const now = Date.now();
+    const cooldownMs = COOLDOWNS[category];
+    if (row && now - row.last_ms < cooldownMs) return cooldownMs - (now - row.last_ms);
+    return 0;
+  }
+
+  commitCooldown({ guildId, userId, category }) {
+    this.stmts.setCooldown.run({ guild_id: guildId, user_id: userId, category, last_ms: Date.now() });
+  }
+
+  checkAchievements(guildId, userId) {
+    const user = this.stmts.getUser.get(guildId, userId);
+    if (!user) return [];
+    const unlocked = this.stmts.getUserAchievements.all(guildId, userId).map(r => r.achievement_id);
+    const newAchievements = [];
+    for (const achievement of ACHIEVEMENTS) {
+      if (!unlocked.includes(achievement.id) && achievement.requirement(user)) {
+        this.stmts.unlockAchievement.run(guildId, userId, achievement.id);
+        newAchievements.push(achievement);
+      }
+    }
+    return newAchievements;
+  }
+  
   close() { this.db.close(); }
 }
 
@@ -54,11 +234,26 @@ class PointsDatabase {
 const formatNumber = (n) => (Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
 const getUserRank = (total) => RANKS.reduce((acc, rank) => total >= rank.min ? rank : acc, RANKS[0]);
-function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next === null) return { pct: 100, cur, need: 0 }; const span = cur.next - cur.min, done = total - cur.min; return { pct: Math.max(0, Math.min(100, Math.floor((done / span) * 100))), cur, need: cur.next - total }; }
+function nextRankProgress(total) {
+  const cur = getUserRank(total);
+  if (cur.next === null) return { pct: 100, cur, need: 0 };
+  const span = cur.next - cur.min, done = total - cur.min;
+  return { pct: Math.max(0, Math.min(100, Math.floor((done / span) * 100))), cur, need: cur.next - total };
+}
 const formatCooldown = (ms) => `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
-function getPeriodStart(period = 'week') { const now = new Date(); switch (period) { case 'day': return now.setHours(0, 0, 0, 0); case 'month': return new Date(now.getFullYear(), now.getMonth(), 1).getTime(); case 'year': return new Date(now.getFullYear(), 0, 1).getTime(); case 'week': default: const dayOfWeek = now.getDay(); const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); return new Date(now.setDate(diff)).setHours(0, 0, 0, 0); } }
+function getPeriodStart(period = 'week') {
+    const now = new Date();
+    switch (period) {
+        case 'day': return now.setHours(0, 0, 0, 0);
+        case 'month': return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        case 'year': return new Date(now.getFullYear(), 0, 1).getTime();
+        case 'week': default:
+            const dayOfWeek = now.getDay();
+            const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+            return new Date(now.setDate(diff)).setHours(0, 0, 0, 0);
+    }
+}
 
-// --- THIS IS THE MISSING FUNCTION ---
 function createKeepAliveServer() {
   http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -172,7 +367,6 @@ class CommandHandler {
 
         try {
             subtitle = `Top ${cat === 'streak' ? 'Streaks' : 'Players'}`;
-            
             if (period === 'all') {
                 if (cat === 'streak') {
                     rows = this.db.stmts.getTopStreaks.all(guild.id);
