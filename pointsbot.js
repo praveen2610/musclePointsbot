@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Enhanced Version (FIXED)
+// pointsbot.js - Professional Final Version
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -54,6 +54,13 @@ const DEDUCTIONS = {
   pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
   burger: { points: 3, emoji: '🍔', label: 'Burger' },
   sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
+  icecream:  { points: 2, emoji: '🍦', label: 'Ice Cream' },
+  cake:      { points: 3, emoji: '🍰', label: 'Cake' },
+  samosa:    { points: 3, emoji: '🥟', label: 'Samosa' },
+  parotta:   { points: 4, emoji: '🫓', label: 'Parotta' },
+  vada_pav:  { points: 3, emoji: '🍔', label: 'Vada Pav' },
+  pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri' },
+  jalebi:    { points: 3, emoji: '🍥', label: 'Jalebi' },
 };
 
 const RANKS = [
@@ -89,6 +96,7 @@ class PointsDatabase {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
+    this.runMigrations();
     this.prepareStatements();
   }
 
@@ -111,6 +119,34 @@ class PointsDatabase {
     `);
   }
   
+  runMigrations() {
+    const tableInfo = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='points'`).get();
+    if (!tableInfo) return;
+
+    const columns = this.db.prepare(`PRAGMA table_info(points)`).all();
+    if (columns.some(col => col.name === 'swimming')) return;
+
+    console.log("MIGRATION: 'points' table is outdated. Applying updates...");
+    const migrate = this.db.transaction(() => {
+      const data = this.db.prepare('SELECT * FROM points').all();
+      this.db.exec('ALTER TABLE points RENAME TO points_old');
+      this.initSchema();
+      const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`);
+      for (const user of data) {
+        insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null });
+      }
+      this.db.exec('DROP TABLE points_old');
+    });
+
+    try {
+      migrate();
+      console.log("MIGRATION: Successfully updated 'points' table schema.");
+    } catch (err) {
+      console.error("MIGRATION: Failed! Rolling back.", err);
+      this.db.exec('DROP TABLE points; ALTER TABLE points_old RENAME TO points;');
+    }
+  }
+
   prepareStatements() {
     const stmts = {};
     stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
@@ -129,11 +165,9 @@ class PointsDatabase {
     stmts.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
     stmts.unlockAchievement = this.db.prepare(`INSERT OR IGNORE INTO achievements (guild_id, user_id, achievement_id) VALUES (?, ?, ?)`),
     stmts.getUserAchievements = this.db.prepare(`SELECT achievement_id FROM achievements WHERE guild_id = ? AND user_id = ?`);
-
     for(const category of Object.keys(POINTS)) {
         stmts[`getLeaderboard_${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
     }
-
     this.stmts = stmts;
   }
   
@@ -150,7 +184,6 @@ class PointsDatabase {
 
     this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategory, add: modAmount });
     this.stmts.logPoints.run(guildId, userId, category, modAmount, Date.now(), reason, notes);
-
     if (modAmount > 0) {
         this.updateStreak(guildId, userId);
         return this.checkAchievements(guildId, userId);
@@ -225,17 +258,6 @@ function getPeriodStart(period = 'week') {
             return new Date(now.setDate(diff)).setHours(0, 0, 0, 0);
     }
 }
-/* =========================
-   KEEP-ALIVE SERVER
-========================= */
-function createKeepAliveServer() {
-  http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is alive and running.');
-  }).listen(process.env.PORT || 3000, () => {
-    console.log('✅ Keep-alive server started.');
-  });
-}
 async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = null }) {
     const userIds = [...rows.map(r => r.userId)];
     if (userRank) userIds.push(userRank.userId);
@@ -280,237 +302,84 @@ function buildCommands() {
 }
 
 /* =========================
-   COMMAND HANDLERS
-========================= */
-/* =========================
-   COMMAND HANDLERS (FIXED)
-========================= */
-class CommandHandler {
-    constructor(db) { this.db = db; }
-
-    async handleClaim(interaction, category, cooldownKey, explicitAmount) {
-        const { guild, user } = interaction;
-        const amount = Number(explicitAmount ?? POINTS[category]) || 0;
-        const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
-        if (remaining > 0) return interaction.reply({ content: `⏳ Cooldown active for **${category}**. Try again in **${formatCooldown(remaining)}**.`, ephemeral: true });
-
-        const newAchievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category, amount, reason: `claim:${category}` });
-        this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
-
-        const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        const { cur, need } = nextRankProgress(userRow.total);
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`**+${formatNumber(amount)}** points for **${category}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Current Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
-        if (need > 0) embed.setFooter({ text: `Only ${formatNumber(need)} points to the next rank!` });
-        
-        const replyPayload = { embeds: [embed], ephemeral: true };
-        if (newAchievements.length > 0) {
-            const achievementEmbed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement Unlocked!').setDescription(newAchievements.map(a => `**${a.name}**: ${a.description}`).join('\n'));
-            replyPayload.embeds.push(achievementEmbed);
-        }
-        return interaction.reply(replyPayload);
-    }
-
-    async handleJunk(interaction) {
-        const { guild, user, options } = interaction;
-        const item = options.getString('item', true);
-        const deduction = DEDUCTIONS[item];
-        this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'total', amount: -deduction.points, reason: `junk:${item}` });
-        const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${deduction.emoji} **-${formatNumber(deduction.points)}** points for **${deduction.label}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }).setThumbnail(user.displayAvatarURL());
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-    }
-
-    async handleMyScore(interaction) {
-        const { guild, user } = interaction;
-        const userRow = this.db.stmts.getUser.get(guild.id, user.id) || { total: 0, current_streak: 0 };
-        const { pct, cur, need } = nextRankProgress(userRow.total);
-        const achievements = this.db.stmts.getUserAchievements.all(guild.id, user.id).map(r => r.achievement_id);
-        const embed = new EmbedBuilder().setColor(cur.color).setAuthor({ name: user.displayName, iconURL: user.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields(
-            { name: 'Total Points', value: formatNumber(userRow.total), inline: true },
-            { name: 'Current Streak', value: `🔥 ${userRow.current_streak || 0} days`, inline: true },
-            { name: 'Progress to Next Rank', value: progressBar(pct), inline: false },
-            { name: 'Achievements', value: achievements.length > 0 ? achievements.map(id => `**${ACHIEVEMENTS.find(a=>a.id===id)?.name || id}**`).join(', ') : 'None yet!' }
-        );
-        if (need > 0) embed.setFooter({ text: `${formatNumber(need)} points to the next rank!` });
-        return interaction.reply({ embeds: [embed] });
-    }
-
-    async handleLeaderboard(interaction) {
-        // --- DEFER MOVED HERE ---
-        await interaction.deferReply();
-        
-        const { guild, user, options } = interaction;
-        const period = options.getString('period');
-        const cat = options.getString('category') ?? 'all';
-        let rows = [], userRankRow = null, subtitle = '';
-
-        try {
-            subtitle = `Top ${cat === 'streak' ? 'Streaks' : 'Players'}`;
-            
-            if (period === 'all') {
-                if (cat === 'streak') {
-                    rows = this.db.stmts.getTopStreaks.all(guild.id, 10);
-                } else if (cat === 'all') {
-                    rows = this.db.stmts.getLeaderboardAllTime.all(guild.id);
-                    userRankRow = this.db.stmts.getUserRankAllTime.get(guild.id, user.id);
-                    if (userRankRow) userRankRow.userId = user.id;
-                } else {
-                    const stmtKey = `getLeaderboard_${cat}`;
-                    if (this.db.stmts[stmtKey]) {
-                        rows = this.db.stmts[stmtKey].all(guild.id);
-                    }
-                }
-            } else {
-                const periodName = { day: 'Today', week: 'This Week', month: 'This Month', year: 'This Year' }[period];
-                subtitle = cat === 'all' ? periodName : `${periodName} - ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-                if (cat === 'streak') {
-                    rows = this.db.stmts.getTopStreaks.all(guild.id);
-                } else {
-                    const since = getPeriodStart(period);
-                    rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, since) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, since, cat);
-                }
-            }
-
-            if (!rows || rows.length === 0) {
-                return interaction.editReply({ content: '📊 No data available for this leaderboard yet! Start earning points to appear here.' });
-            }
-
-            rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
-
-            const imageBuffer = await renderLeaderboardCard({ title: 'Leaderboard', rows, guild, userRank: userRankRow, subtitle });
-            return interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' })] });
-        } catch (err) {
-            console.error("❌ Leaderboard render failed:", err);
-            return interaction.editReply({ content: `❌ Sorry, there was an error generating the leaderboard.` });
-        }
-    }
-
-    async handleBuddy(interaction) {
-        const { guild, user, options } = interaction;
-        const targetUser = options.getUser('user');
-        if (!targetUser) {
-            const buddy = this.db.stmts.getBuddy.get(guild.id, user.id);
-            return interaction.reply({ content: buddy?.buddy_id ? `Your workout buddy is <@${buddy.buddy_id}>.` : 'You haven\'t set a workout buddy yet!', ephemeral: true });
-        }
-        if (targetUser.id === user.id) return interaction.reply({ content: 'You cannot be your own buddy!', ephemeral: true });
-        this.db.stmts.setBuddy.run(guild.id, user.id, targetUser.id);
-        return interaction.reply({ content: `✨ You've set <@${targetUser.id}> as your new workout buddy!` });
-    }
-
-    async handleAdmin(interaction) {
-        // --- DEFER MOVED HERE ---
-        await interaction.deferReply({ ephemeral: true });
-
-        const { guild, user, options } = interaction;
-        const subcommand = options.getSubcommand();
-        const targetUser = options.getUser('user', true);
-        const amount = options.getNumber('amount', true);
-        const category = options.getString('category', true);
-        const reason = options.getString('reason') || `Admin action by ${user.tag}`;
-
-        if (subcommand === 'award') {
-            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount, reason: 'admin:award', notes: reason });
-            return interaction.editReply({ content: `✅ Awarded ${formatNumber(amount)} ${category} points to <@${targetUser.id}>.` });
-        }
-        if (subcommand === 'deduct') {
-            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount: -amount, reason: 'admin:deduct', notes: reason });
-            return interaction.editReply({ content: `✅ Deducted ${formatNumber(amount)} ${category} points from <@${targetUser.id}>.` });
-        }
-    }
-}
-
-/* =========================
-   MAIN BOT INITIALIZATION (FIXED)
+   MAIN BOT INITIALIZATION
 ========================= */
 async function main() {
-  createKeepAliveServer();
-  if (!CONFIG.token || !CONFIG.appId) {
-    console.error('❌ Missing required environment variables: DISCORD_TOKEN and APPLICATION_ID');
-    process.exit(1);
-  }
-
-  const database = new PointsDatabase(CONFIG.dbFile);
-  const handler = new CommandHandler(database);
-
-  const rest = new REST({ version: '10' }).setToken(CONFIG.token);
-  try {
-    console.log('🔄 Registering slash commands...');
-    const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId);
-    await rest.put(route, { body: buildCommands() });
-    console.log('✅ Registered slash commands.');
-  } catch (err) {
-    console.error('❌ Command registration failed:', err);
-    process.exit(1);
-  }
-
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
-
-  // Use the new 'clientReady' event to fix the deprecation warning
-  client.once('clientReady', (c) => {
-    console.log(`🤖 Logged in as ${c.user.tag}`);
-    console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
-  });
-
-  client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand() || !interaction.guild) return;
-    const { commandName } = interaction;
-
-    try {
-      const claimCategories = Object.keys(POINTS);
-      if (claimCategories.includes(commandName)) {
-        await handler.handleClaim(interaction, commandName, commandName);
-      } else {
-        switch (commandName) {
-          case 'walking':
-          case 'jogging':
-          case 'running':
-            await handler.handleClaim(interaction, 'exercise', 'exercise', interaction.options.getNumber('km', true) * DISTANCE_RATES[commandName]);
-            break;
-          case 'junk': await handler.handleJunk(interaction); break;
-          case 'myscore': await handler.handleMyScore(interaction); break;
-          case 'leaderboard': await handler.handleLeaderboard(interaction); break;
-          case 'buddy': await handler.handleBuddy(interaction); break;
-          case 'admin': await handler.handleAdmin(interaction); break;
-        }
-      }
-    } catch (err) {
-      console.error(`❌ Error handling command ${commandName}:`, err);
-      
-      // --- ROBUST ERROR HANDLING ---
-      // Discord error code 10062 is "Unknown Interaction", which means it timed out.
-      // If we get this error, we can't reply, so we just log it.
-      if (err.code === 10062) {
-        console.log("Interaction timed out (likely a cold start). No reply sent.");
-        return;
-      }
-
-      const reply = { content: `❌ An error occurred while processing your command.`, ephemeral: true };
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(reply).catch(console.error); // Catch potential follow-up errors
-      } else {
-        await interaction.reply(reply).catch(console.error);
-      }
+    createKeepAliveServer();
+    if (!CONFIG.token || !CONFIG.appId) {
+        console.error('❌ Missing required environment variables: DISCORD_TOKEN and APPLICATION_ID');
+        process.exit(1);
     }
-  });
 
-  process.on('SIGINT', () => {
-    console.log('\n🛑 SIGINT received, shutting down gracefully...');
-    database.close();
-    client.destroy();
-    process.exit(0);
-  });
+    const database = new PointsDatabase(CONFIG.dbFile);
+    const handler = new CommandHandler(database);
 
-  process.on('SIGTERM', () => {
-    console.log('\n🛑 SIGTERM received, shutting down gracefully...');
-    database.close();
-    client.destroy();
-    process.exit(0);
-  });
+    const rest = new REST({ version: '10' }).setToken(CONFIG.token);
+    try {
+        console.log('🔄 Registering slash commands...');
+        const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId);
+        await rest.put(route, { body: buildCommands() });
+        console.log('✅ Registered slash commands.');
+    } catch (err) {
+        console.error('❌ Command registration failed:', err);
+        process.exit(1);
+    }
 
-  await client.login(CONFIG.token);
+    const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+
+    client.once('ready', (c) => {
+        console.log(`🤖 Logged in as ${c.user.tag}`);
+        console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
+    });
+
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isChatInputCommand() || !interaction.guild) return;
+        const { commandName } = interaction;
+
+        try {
+            const claimCategories = Object.keys(POINTS);
+            if (claimCategories.includes(commandName)) {
+                await handler.handleClaim(interaction, commandName, commandName);
+            } else {
+                switch (commandName) {
+                    case 'walking':
+                    case 'jogging':
+                    case 'running':
+                        await handler.handleClaim(interaction, 'exercise', 'exercise', interaction.options.getNumber('km', true) * DISTANCE_RATES[commandName]);
+                        break;
+                    case 'junk': await handler.handleJunk(interaction); break;
+                    case 'myscore': await handler.handleMyScore(interaction); break;
+                    case 'leaderboard': await handler.handleLeaderboard(interaction); break;
+                    case 'buddy': await handler.handleBuddy(interaction); break;
+                    case 'admin': await handler.handleAdmin(interaction); break;
+                }
+            }
+        } catch (err) {
+            console.error(`❌ Error handling command ${commandName}:`, err);
+            const reply = { content: `❌ An error occurred while processing your command.`, ephemeral: true };
+            if (interaction.deferred || interaction.replied) await interaction.editReply(reply).catch(console.error);
+            else await interaction.reply(reply).catch(console.error);
+        }
+    });
+
+    process.on('SIGINT', () => {
+        console.log('\n🛑 SIGINT received, shutting down gracefully...');
+        database.close();
+        client.destroy();
+        process.exit(0);
+    });
+
+    process.on('SIGTERM', () => {
+        console.log('\n🛑 SIGTERM received, shutting down gracefully...');
+        database.close();
+        client.destroy();
+        process.exit(0);
+    });
+
+    await client.login(CONFIG.token);
 }
 
 main().catch(err => {
-  console.error('❌ Fatal error in main execution:', err);
-  process.exit(1);
+    console.error('❌ Fatal error in main execution:', err);
+    process.exit(1);
 });
