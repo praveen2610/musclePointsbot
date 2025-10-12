@@ -54,6 +54,18 @@ const DEDUCTIONS = {
   pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
   burger: { points: 3, emoji: '🍔', label: 'Burger' },
   sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
+  samosa:    { points: 3, emoji: '🥟', label: 'Samosa' },
+  parotta:   { points: 4, emoji: '🫓', label: 'Parotta' },
+  vada_pav:  { points: 3, emoji: '🍔', label: 'Vada Pav' },
+  pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri / Golgappe' },
+  jalebi:    { points: 3, emoji: '🍥', label: 'Jalebi' },
+  pakora:    { points: 2, emoji: ' fritter', label: 'Pakora / Bhaji' },
+  bonda:     { points: 2, emoji: '🥔', label: 'Bonda' },
+  murukku:   { points: 2, emoji: '🥨', label: 'Murukku / Chakli' },
+  kachori:   { points: 3, emoji: '🍘', label: 'Kachori' },
+  chaat:     { points: 3, emoji: '🥣', label: 'Chaat' },
+  gulab_jamun: { points: 3, emoji: '🍮', label: 'Gulab Jamun' },
+  chips:     { points: 2, emoji: '🥔', label: 'Chips (Packet)' },
 };
 
 const RANKS = [
