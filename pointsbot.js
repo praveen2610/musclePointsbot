@@ -20,6 +20,7 @@ const CONFIG = {
   token: (process.env.DISCORD_TOKEN || '').trim(),
   devGuildId: (process.env.DEV_GUILD_ID || '').trim(),
   dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
+  adminRoleNames: (process.env.ADMIN_ROLES || 'Admin,Moderator').split(',').map(r => r.trim()),
 };
 
 const COOLDOWNS = {
@@ -94,6 +95,14 @@ class PointsDatabase {
 
   initSchema() {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS points (
+        guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
+        gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
+        exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0,
+        current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
+        created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        PRIMARY KEY (guild_id, user_id)
+      );
       CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
       CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT );
       CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
@@ -104,31 +113,24 @@ class PointsDatabase {
   }
   
   runMigrations() {
+    const tableInfo = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='points'`).get();
+    if (!tableInfo) return;
+
     const columns = this.db.prepare(`PRAGMA table_info(points)`).all();
-    if (!columns.length || columns.some(col => col.name === 'swimming')) {
-      return; // Table is new or already migrated
-    }
+    if (columns.some(col => col.name === 'swimming')) return;
 
     console.log("MIGRATION: 'points' table is outdated. Applying updates...");
     const migrate = this.db.transaction(() => {
       const data = this.db.prepare('SELECT * FROM points').all();
       this.db.exec('ALTER TABLE points RENAME TO points_old');
-      this.db.exec(`
-        CREATE TABLE points (
-          guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
-          gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
-          exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0,
-          current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
-          created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-          PRIMARY KEY (guild_id, user_id)
-        );
-      `);
+      this.initSchema();
       const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`);
       for (const user of data) {
         insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null });
       }
       this.db.exec('DROP TABLE points_old');
     });
+
     try {
       migrate();
       console.log("MIGRATION: Successfully updated 'points' table schema.");
@@ -156,7 +158,7 @@ class PointsDatabase {
     stmts.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
     stmts.unlockAchievement = this.db.prepare(`INSERT OR IGNORE INTO achievements (guild_id, user_id, achievement_id) VALUES (?, ?, ?)`),
     stmts.getUserAchievements = this.db.prepare(`SELECT achievement_id FROM achievements WHERE guild_id = ? AND user_id = ?`);
-    for (const category of Object.keys(POINTS)) {
+    for(const category of Object.keys(POINTS)) {
         stmts[`getLeaderboard${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
     }
     this.stmts = stmts;
@@ -364,7 +366,7 @@ class CommandHandler {
                     rows = this.db.stmts[`getLeaderboard${cat}`].all(guild.id, 10);
                 }
             } else {
-                rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, getPeriodStart(period), 10) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, getPeriodStart(period), cat, 10);
+                rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, getPeriodStart(period)) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, getPeriodStart(period), cat);
             }
             rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
 
