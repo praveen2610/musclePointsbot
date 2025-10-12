@@ -49,11 +49,20 @@ const DISTANCE_RATES = {
 
 const DEDUCTIONS = {
   chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
-  fries: { points: 3, emoji: '🍟', label: 'Fries' },
-  soda: { points: 2, emoji: '🥤', label: 'Soda' },
-  pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
-  burger: { points: 3, emoji: '🍔', label: 'Burger' },
-  sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
+  fries:     { points: 3, emoji: '🍟', label: 'Fries' },
+  soda:      { points: 2, emoji: '🥤', label: 'Soda' },
+  pizza:     { points: 4, emoji: '🍕', label: 'Pizza' },
+  burger:    { points: 3, emoji: '🍔', label: 'Burger' },
+  sweets:    { points: 2, emoji: '🍬', label: 'Sweets' },
+  icecream:  { points: 2, emoji: '🍦', label: 'Ice Cream' },
+  cake:      { points: 3, emoji: '🍰', label: 'Cake' },
+  
+  // --- New Indian Junk Food Options ---
+  samosa:    { points: 3, emoji: '🥟', label: 'Samosa' },
+  parotta:   { points: 4, emoji: '🫓', label: 'Parotta' },
+  vada_pav:  { points: 3, emoji: '🍔', label: 'Vada Pav' },
+  pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri' },
+  jalebi:    { points: 3, emoji: '🍥', label: 'Jalebi' },
 };
 
 const RANKS = [
