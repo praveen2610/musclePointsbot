@@ -408,7 +408,6 @@ class CommandHandler {
         }
     }
 }
-
 /* =========================
    MAIN BOT INITIALIZATION
 ========================= */
@@ -437,6 +436,13 @@ async function main() {
   client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || !interaction.guild) return;
     const { commandName } = interaction;
+
+    // --- Defer Replies for Slow Commands ---
+    // Defer any command that might take longer than 3 seconds.
+    if (commandName === 'leaderboard' || commandName === 'admin') {
+      await interaction.deferReply({ ephemeral: commandName === 'admin' });
+    }
+
     try {
       const claimCategories = Object.keys(POINTS);
       if (claimCategories.includes(commandName)) {
@@ -458,8 +464,13 @@ async function main() {
     } catch (err) {
       console.error(`Error handling command ${commandName}:`, err);
       const reply = { content: '❌ An error occurred while processing your command.', ephemeral: true };
-      if (interaction.deferred || interaction.replied) await interaction.editReply(reply);
-      else await interaction.reply(reply);
+      
+      // Use editReply if we deferred, otherwise use reply
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(reply);
+      } else {
+        await interaction.reply(reply);
+      }
     }
   });
 
