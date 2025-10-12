@@ -1,15 +1,13 @@
-// pointsbot.js - Professional Enhanced Version (FIXED)
+// pointsbot.js - Professional Version with Text Leaderboard
 import 'dotenv/config';
-import http from 'node:http';
 import {
   Client, GatewayIntentBits, REST, Routes,
-  SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits
+  SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import nodeHtmlToImage from 'node-html-to-image';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -54,13 +52,6 @@ const DEDUCTIONS = {
   pizza: { points: 4, emoji: '🍕', label: 'Pizza' },
   burger: { points: 3, emoji: '🍔', label: 'Burger' },
   sweets: { points: 2, emoji: '🍬', label: 'Sweets' },
-  icecream:  { points: 2, emoji: '🍦', label: 'Ice Cream' },
-  cake:      { points: 3, emoji: '🍰', label: 'Cake' },
-  samosa:    { points: 3, emoji: '🥟', label: 'Samosa' },
-  parotta:   { points: 4, emoji: '🫓', label: 'Parotta' },
-  vada_pav:  { points: 3, emoji: '🍔', label: 'Vada Pav' },
-  pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri' },
-  jalebi:    { points: 3, emoji: '🍥', label: 'Jalebi' },
 };
 
 const RANKS = [
@@ -96,7 +87,6 @@ class PointsDatabase {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
-    this.runMigrations();
     this.prepareStatements();
   }
 
@@ -119,32 +109,6 @@ class PointsDatabase {
     `);
   }
   
-  runMigrations() {
-    const tableInfo = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='points'`).get();
-    if (!tableInfo) return;
-    const columns = this.db.prepare(`PRAGMA table_info(points)`).all();
-    if (columns.some(col => col.name === 'swimming')) return;
-
-    console.log("MIGRATION: 'points' table is outdated. Applying updates...");
-    const migrate = this.db.transaction(() => {
-      const data = this.db.prepare('SELECT * FROM points').all();
-      this.db.exec('ALTER TABLE points RENAME TO points_old');
-      this.initSchema();
-      const insert = this.db.prepare(`INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga, current_streak, longest_streak, last_activity_date) VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga, @current_streak, @longest_streak, @last_activity_date)`);
-      for (const user of data) {
-        insert.run({ ...user, swimming: 0, yoga: 0, current_streak: user.current_streak || 0, longest_streak: user.longest_streak || 0, last_activity_date: user.last_activity_date || null });
-      }
-      this.db.exec('DROP TABLE points_old');
-    });
-    try {
-      migrate();
-      console.log("MIGRATION: Successfully updated 'points' table schema.");
-    } catch (err) {
-      console.error("MIGRATION: Failed! Rolling back.", err);
-      this.db.exec('DROP TABLE points; ALTER TABLE points_old RENAME TO points;');
-    }
-  }
-
   prepareStatements() {
     const stmts = {};
     stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
@@ -154,7 +118,6 @@ class PointsDatabase {
     stmts.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
     stmts.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
     stmts.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`),
-    stmts.getUserRankAllTime = this.db.prepare(`WITH Ranks AS (SELECT user_id, RANK() OVER (ORDER BY total DESC) as rank, total as score FROM points WHERE guild_id = ?) SELECT rank, score FROM Ranks WHERE user_id = ?`);
     stmts.getLeaderboardAllTime = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id = ? AND total > 0 ORDER BY total DESC LIMIT 10`);
     stmts.getLeaderboardPeriodic = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`);
     stmts.getLeaderboardPeriodicCategory = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND category = ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`);
@@ -229,7 +192,7 @@ class PointsDatabase {
 }
 
 /* =========================
-   UTILITIES & RENDERER
+   UTILITIES
 ========================= */
 const formatNumber = (n) => (Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
@@ -252,38 +215,6 @@ function getPeriodStart(period = 'week') {
             const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
             return new Date(now.setDate(diff)).setHours(0, 0, 0, 0);
     }
-}
-
-function createKeepAliveServer() {
-  http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is alive and running.');
-  }).listen(process.env.PORT || 3000, () => {
-    console.log('✅ Keep-alive server started.');
-  });
-}
-
-async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = null }) {
-    const userIds = [...rows.map(r => r.userId)];
-    if (userRank) userIds.push(userRank.userId);
-    const members = await guild.members.fetch({ user: userIds }).catch(() => new Map());
-    const userRows = rows.map(row => {
-        const member = members.get(row.userId);
-        const user = member?.user;
-        return { rank: row.rank, avatarUrl: user?.displayAvatarURL({ extension: 'png', size: 256 }) || 'https://cdn.discordapp.com/embed/avatars/0.png', displayName: (member?.displayName || user?.username || 'Unknown User').replace(/[<>]/g, ''), score: formatNumber(row.score) };
-    });
-    let userRankHtml = '';
-    if (userRank && !rows.some(r => r.userId === userRank.userId)) {
-        const member = members.get(userRank.userId);
-        const user = member?.user;
-        const avatarUrl = user?.displayAvatarURL({ extension: 'png', size: 256 }) || 'https://cdn.discordapp.com/embed/avatars/0.png';
-        const displayName = (member?.displayName || user?.username || 'You').replace(/[<>]/g, '');
-        userRankHtml = `<div class="row self"><div class="rank-badge self-badge">#${userRank.rank}</div><div class="avatar-container"><img class="avatar" src="${avatarUrl}" alt="${displayName}" /></div><div class="user-info"><div class="name">${displayName}</div><div class="user-tag">Your Rank</div></div><div class="score">${formatNumber(userRank.score)}</div></div>`;
-    }
-    const guildIcon = guild.iconURL({ extension: 'png', size: 256 });
-    const finalSubtitle = subtitle || `Top ${rows.length} Players`;
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8" /><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%);color:#e2e8f0;width:900px;padding:40px;-webkit-font-smoothing:antialiased;}.card{background:linear-gradient(180deg, #1e293b 0%, #0f172a 100%);border-radius:24px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);border:1px solid rgba(148,163,184,0.1);}.header{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);padding:32px;display:flex;align-items:center;gap:20px;border-bottom:3px solid rgba(59,130,246,0.3);}.guild-icon{width:72px;height:72px;border-radius:20px;box-shadow:0 10px 25px rgba(0,0,0,0.3);border:3px solid rgba(255,255,255,0.2);}.header-text{flex:1;}.title{font-size:32px;font-weight:900;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,0.3);letter-spacing:-.5px;margin-bottom:4px;}.subtitle{font-size:16px;color:rgba(255,255,255,0.9);font-weight:500;text-transform:uppercase;letter-spacing:1px;}.leaderboard-content{padding:8px;}.row{display:flex;align-items:center;gap:16px;padding:16px 24px;margin:8px 0;background:rgba(30,41,59,0.5);border-radius:16px;transition:all .3s ease;border:1px solid transparent;}.row.top3{background:linear-gradient(135deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%);border:1px solid rgba(59,130,246,0.3);}.rank-badge{min-width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;border-radius:12px;background:rgba(71,85,105,0.5);color:#94a3b8;border:2px solid rgba(148,163,184,0.2);}.rank-badge.gold{background:linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);color:#78350f;box-shadow:0 4px 15px rgba(251,191,36,0.4);border-color:#fde047;}.rank-badge.silver{background:linear-gradient(135deg, #e5e7eb 0%, #d1d5db 100%);color:#374151;box-shadow:0 4px 15px rgba(229,231,235,0.4);border-color:#f3f4f6;}.rank-badge.bronze{background:linear-gradient(135deg, #f97316 0%, #ea580c 100%);color:#7c2d12;box-shadow:0 4px 15px rgba(249,115,22,0.4);border-color:#fb923c;}.avatar{width:56px;height:56px;border-radius:50%;border:3px solid rgba(148,163,184,0.3);box-shadow:0 4px 12px rgba(0,0,0,0.3);}.top3 .avatar{border-color:rgba(59,130,246,0.6);box-shadow:0 4px 20px rgba(59,130,246,0.4);}.user-info{flex:1;min-width:0;}.name{font-weight:700;font-size:18px;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}.user-tag{font-size:13px;color:#94a3b8;font-weight:500;}.score{font-weight:900;font-size:24px;background:linear-gradient(135deg, #10b981 0%, #059669 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;min-width:80px;text-align:right;}.row.self{margin-top:16px;background:linear-gradient(135deg, rgba(59,130,246,0.2) 0%, rgba(139,92,246,0.2) 100%);border:2px solid #3b82f6;box-shadow:0 8px 20px rgba(59,130,246,0.3);}.rank-badge.self-badge{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);color:#fff;border-color:#60a5fa;}</style></head><body><div class="card"><div class="header">${guildIcon ? `<img src="${guildIcon}" class="guild-icon" alt="Server Icon" />` : ''}<div class="header-text"><h1 class="title">${title}</h1><div class="subtitle">${finalSubtitle} • ${guild.name}</div></div></div><div class="leaderboard-content">${userRows.map(u => `<div class="row ${u.rank <= 3 ? 'top3' : ''}"><div class="rank-badge ${u.rank === 1 ? 'gold' : u.rank === 2 ? 'silver' : u.rank === 3 ? 'bronze' : ''}">#${u.rank}</div><div class="avatar-container"><img class="avatar" src="${u.avatarUrl}" alt="${u.displayName}" /></div><div class="user-info"><div class="name">${u.displayName}</div><div class="user-tag">Rank #${u.rank}</div></div><div class="score">${u.score}</div></div>`).join('')}${userRankHtml}</div></div></body></html>`;
-    return nodeHtmlToImage({ html, puppeteerArgs: { args: ['--no-sandbox', '--disable-setuid-sandbox'] } });
 }
 
 /* =========================
@@ -360,47 +291,45 @@ class CommandHandler {
     }
 
     async handleLeaderboard(interaction) {
+        await interaction.deferReply();
         const { guild, user, options } = interaction;
         const period = options.getString('period');
         const cat = options.getString('category') ?? 'all';
-        let rows = [], userRankRow = null, subtitle = '';
-
+        let rows = [];
+        
         try {
-            subtitle = `Top ${cat === 'streak' ? 'Streaks' : 'Players'}`;
+            const periodName = { day: 'Today', week: 'This Week', month: 'This Month', year: 'This Year', 'all': 'All Time' }[period];
+            const catName = cat === 'all' ? 'Overall' : (cat === 'streak' ? 'Streaks' : cat.charAt(0).toUpperCase() + cat.slice(1));
+            const subtitle = `${periodName} - ${catName}`;
+
             if (period === 'all') {
                 if (cat === 'streak') {
                     rows = this.db.stmts.getTopStreaks.all(guild.id);
                 } else if (cat === 'all') {
                     rows = this.db.stmts.getLeaderboardAllTime.all(guild.id);
-                    userRankRow = this.db.stmts.getUserRankAllTime.get(guild.id, user.id);
-                    if (userRankRow) userRankRow.userId = user.id;
                 } else {
                     const stmtKey = `getLeaderboard_${cat}`;
-                    if (this.db.stmts[stmtKey]) {
-                        rows = this.db.stmts[stmtKey].all(guild.id);
-                    }
+                    if (this.db.stmts[stmtKey]) rows = this.db.stmts[stmtKey].all(guild.id);
                 }
             } else {
-                const periodName = { day: 'Today', week: 'This Week', month: 'This Month', year: 'This Year' }[period];
-                subtitle = cat === 'all' ? periodName : `${periodName} - ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-                if (cat === 'streak') {
-                    rows = this.db.stmts.getTopStreaks.all(guild.id);
-                } else {
-                    const since = getPeriodStart(period);
-                    rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, since) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, since, cat);
-                }
+                const since = getPeriodStart(period);
+                rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, since) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, since, cat);
             }
 
             if (!rows || rows.length === 0) {
-                return interaction.editReply({ content: '📊 No data available for this leaderboard yet! Start earning points to appear here.' });
+                return interaction.editReply({ content: '📊 No data available for this leaderboard yet!' });
             }
 
-            rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
+            const lines = rows.map((r, idx) => {
+                const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+                return `${medal} <@${r.userId || r.user_id}> - **${formatNumber(r.score)}** ${cat === 'streak' ? 'days' : 'points'}`;
+            }).join('\n');
 
-            const imageBuffer = await renderLeaderboardCard({ title: 'Leaderboard', rows, guild, userRank: userRankRow, subtitle });
-            return interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' })] });
+            const embed = new EmbedBuilder().setTitle(`🏆 Leaderboard`).setDescription(lines).setColor(0x3498db).setFooter({ text: subtitle });
+            return interaction.editReply({ embeds: [embed] });
+
         } catch (err) {
-            console.error("❌ Leaderboard render failed:", err);
+            console.error("❌ Leaderboard generation failed:", err);
             return interaction.editReply({ content: `❌ Sorry, there was an error generating the leaderboard.` });
         }
     }
@@ -418,6 +347,7 @@ class CommandHandler {
     }
 
     async handleAdmin(interaction) {
+        await interaction.deferReply({ ephemeral: true });
         const { guild, user, options } = interaction;
         const subcommand = options.getSubcommand();
         const targetUser = options.getUser('user', true);
@@ -440,7 +370,6 @@ class CommandHandler {
    MAIN BOT INITIALIZATION
 ========================= */
 async function main() {
-  createKeepAliveServer();
   if (!CONFIG.token || !CONFIG.appId) {
     console.error('❌ Missing required environment variables: DISCORD_TOKEN and APPLICATION_ID');
     process.exit(1);
@@ -472,10 +401,6 @@ async function main() {
     const { commandName } = interaction;
 
     try {
-      if (['leaderboard', 'admin'].includes(commandName)) {
-        await interaction.deferReply({ ephemeral: commandName === 'admin' });
-      }
-
       const claimCategories = Object.keys(POINTS);
       if (claimCategories.includes(commandName)) {
         await handler.handleClaim(interaction, commandName, commandName);
