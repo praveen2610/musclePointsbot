@@ -409,7 +409,7 @@ class CommandHandler {
 }
 
 /* =========================
-   MAIN BOT INITIALIZATION
+   MAIN BOT INITIALIZATION (FIXED)
 ========================= */
 async function main() {
   if (!CONFIG.token || !CONFIG.appId) {
@@ -433,9 +433,10 @@ async function main() {
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-  client.on('ready', () => {
-    console.log(`🤖 Logged in as ${client.user.tag}`);
-    console.log(`📊 Serving ${client.guilds.cache.size} server(s)`);
+  // Use the new 'clientReady' event to fix the deprecation warning
+  client.once('clientReady', (c) => {
+    console.log(`🤖 Logged in as ${c.user.tag}`);
+    console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
   });
 
   client.on('interactionCreate', async (interaction) => {
@@ -443,9 +444,6 @@ async function main() {
     const { commandName } = interaction;
 
     try {
-      // Defer logic is now handled inside each command handler where needed.
-      // No defer block is needed here anymore.
-
       const claimCategories = Object.keys(POINTS);
       if (claimCategories.includes(commandName)) {
         await handler.handleClaim(interaction, commandName, commandName);
@@ -465,9 +463,21 @@ async function main() {
       }
     } catch (err) {
       console.error(`❌ Error handling command ${commandName}:`, err);
+      
+      // --- ROBUST ERROR HANDLING ---
+      // Discord error code 10062 is "Unknown Interaction", which means it timed out.
+      // If we get this error, we can't reply, so we just log it.
+      if (err.code === 10062) {
+        console.log("Interaction timed out (likely a cold start). No reply sent.");
+        return;
+      }
+
       const reply = { content: `❌ An error occurred while processing your command.`, ephemeral: true };
-      if (interaction.deferred || interaction.replied) await interaction.editReply(reply).catch(console.error);
-      else await interaction.reply(reply).catch(console.error);
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(reply).catch(console.error); // Catch potential follow-up errors
+      } else {
+        await interaction.reply(reply).catch(console.error);
+      }
     }
   });
 
