@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Version with All Features
+// pointsbot.js - Professional Version (Simple Leaderboard)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -9,7 +9,6 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import nodeHtmlToImage from 'node-html-to-image';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -216,7 +215,7 @@ class PointsDatabase {
 }
 
 /* =========================
-    UTILITIES & RENDERER
+    UTILITIES
 ========================= */
 const formatNumber = (n) => (Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
@@ -225,9 +224,6 @@ function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next 
 const formatCooldown = (ms) => `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
 function getPeriodStart(period = 'week') { const now = new Date(); switch (period) { case 'day': now.setHours(0, 0, 0, 0); return Math.floor(now.getTime() / 1000); case 'month': return Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000); case 'year': return Math.floor(new Date(now.getFullYear(), 0, 1).getTime() / 1000); case 'week': default: const dayOfWeek = now.getDay(); const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); now.setDate(diff); now.setHours(0, 0, 0, 0); return Math.floor(now.getTime() / 1000); } }
 function createKeepAliveServer() { http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('Bot is alive and running.'); }).listen(process.env.PORT || 3000, () => { console.log('✅ Keep-alive server started.'); }); }
-async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = null }) { const userIds = [...rows.map(r => r.userId)]; if (userRank) userIds.push(userRank.userId); const members = await guild.members.fetch({ user: userIds }).catch(() => new Map()); const userRows = rows.map(row => { const member = members.get(row.userId); const user = member?.user; return { rank: row.rank, avatarUrl: user?.displayAvatarURL({ extension: 'png', size: 256 }) || 'https://cdn.discordapp.com/embed/avatars/0.png', displayName: (member?.displayName || user?.username || 'Unknown User').replace(/[<>]/g, ''), score: formatNumber(row.score) }; }); let userRankHtml = ''; if (userRank && !rows.some(r => r.userId === userRank.userId)) { const member = members.get(userRank.userId); const user = member?.user; const avatarUrl = user?.displayAvatarURL({ extension: 'png', size: 256 }) || 'https://cdn.discordapp.com/embed/avatars/0.png'; const displayName = (member?.displayName || user?.username || 'You').replace(/[<>]/g, ''); userRankHtml = `<div class="row self"><div class="rank-badge self-badge">#${userRank.rank}</div><div class="avatar-container"><img class="avatar" src="${avatarUrl}" alt="${displayName}" /></div><div class="user-info"><div class="name">${displayName}</div><div class="user-tag">Your Rank</div></div><div class="score">${formatNumber(userRank.score)}</div></div>`; } const guildIcon = guild.iconURL({ extension: 'png', size: 256 }); const finalSubtitle = subtitle || `Top ${rows.length} Players`; const html = `<!DOCTYPE html><html><head><meta charset="utf-8" /><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%);color:#e2e8f0;width:900px;padding:40px;-webkit-font-smoothing:antialiased;}.card{background:linear-gradient(180deg, #1e293b 0%, #0f172a 100%);border-radius:24px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);border:1px solid rgba(148,163,184,0.1);}.header{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);padding:32px;display:flex;align-items:center;gap:20px;border-bottom:3px solid rgba(59,130,246,0.3);}.guild-icon{width:72px;height:72px;border-radius:20px;box-shadow:0 10px 25px rgba(0,0,0,0.3);border:3px solid rgba(255,255,255,0.2);}.header-text{flex:1;}.title{font-size:32px;font-weight:900;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,0.3);letter-spacing:-.5px;margin-bottom:4px;}.subtitle{font-size:16px;color:rgba(255,255,255,0.9);font-weight:500;text-transform:uppercase;letter-spacing:1px;}.leaderboard-content{padding:8px;}.row{display:flex;align-items:center;gap:16px;padding:16px 24px;margin:8px 0;background:rgba(30,41,59,0.5);border-radius:16px;transition:all .3s ease;border:1px solid transparent;}.row.top3{background:linear-gradient(135deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%);border:1px solid rgba(59,130,246,0.3);}.rank-badge{min-width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;border-radius:12px;background:rgba(71,85,105,0.5);color:#94a3b8;border:2px solid rgba(148,163,184,0.2);}.rank-badge.gold{background:linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);color:#78350f;box-shadow:0 4px 15px rgba(251,191,36,0.4);border-color:#fde047;}.rank-badge.silver{background:linear-gradient(135deg, #e5e7eb 0%, #d1d5db 100%);color:#374151;box-shadow:0 4px 15px rgba(229,231,235,0.4);border-color:#f3f4f6;}.rank-badge.bronze{background:linear-gradient(135deg, #f97316 0%, #ea580c 100%);color:#7c2d12;box-shadow:0 4px 15px rgba(249,115,22,0.4);border-color:#fb923c;}.avatar{width:56px;height:56px;border-radius:50%;border:3px solid rgba(148,163,184,0.3);box-shadow:0 4px 12px rgba(0,0,0,0.3);}.top3 .avatar{border-color:rgba(59,130,246,0.6);box-shadow:0 4px 20px rgba(59,130,246,0.4);}.user-info{flex:1;min-width:0;}.name{font-weight:700;font-size:18px;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}.user-tag{font-size:13px;color:#94a3b8;font-weight:500;}.score{font-weight:900;font-size:24px;background:linear-gradient(135deg, #10b981 0%, #059669 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;min-width:80px;text-align:right;}.row.self{margin-top:16px;background:linear-gradient(135deg, rgba(59,130,246,0.2) 0%, rgba(139,92,246,0.2) 100%);border:2px solid #3b82f6;box-shadow:0 8px 20px rgba(59,130,246,0.3);}.rank-badge.self-badge{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);color:#fff;border-color:#60a5fa;}</style></head><body><div class="card"><div class="header">${guildIcon ? `<img src="${guildIcon}" class="guild-icon" alt="Server Icon" />` : ''}<div class="header-text"><h1 class="title">${title}</h1><div class="subtitle">${finalSubtitle} • ${guild.name}</div></div></div><div class="leaderboard-content">${userRows.map(u => `<div class="row ${u.rank <= 3 ? 'top3' : ''}"><div class="rank-badge ${u.rank === 1 ? 'gold' : u.rank === 2 ? 'silver' : u.rank === 3 ? 'bronze' : ''}">#${u.rank}</div><div class="avatar-container"><img class="avatar" src="${u.avatarUrl}" alt="${u.displayName}" /></div><div class="user-info"><div class="name">${u.displayName}</div><div class="user-tag">Rank #${u.rank}</div></div><div class="score">${u.score}</div></div>`).join('')}${userRankHtml}</div></div></body></html>`;
-    return nodeHtmlToImage({ html, puppeteerArgs: { args: ['--no-sandbox', '--disable-setuid-sandbox'] } });
-}
 
 /* =========================
     COMMAND DEFINITIONS
@@ -263,7 +259,6 @@ class CommandHandler {
         
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
         if (remaining > 0) {
-            // NOTE: Using editReply because the interaction is now deferred in the main handler
             return interaction.editReply({ 
                 content: `⏳ Cooldown active for **${category}**. Try again in **${formatCooldown(remaining)}**.`,
                 flags: [MessageFlags.Ephemeral] 
@@ -325,12 +320,12 @@ class CommandHandler {
 
         subtitle = `Top ${cat === 'streak' ? 'Streaks' : 'Players'}`;
         if (period === 'all') {
+            subtitle += ' (All Time)';
             if (cat === 'streak') {
                 rows = this.db.stmts.getTopStreaks.all(guild.id);
             } else if (cat === 'all') {
                 rows = this.db.stmts.getLeaderboardAllTime.all(guild.id);
                 userRankRow = this.db.stmts.getUserRankAllTime.get(guild.id, user.id);
-                if (userRankRow) userRankRow.userId = user.id;
             } else {
                 const stmtKey = `getLeaderboard_${cat}`;
                 if (this.db.stmts[stmtKey]) rows = this.db.stmts[stmtKey].all(guild.id);
@@ -345,11 +340,36 @@ class CommandHandler {
                 rows = cat === 'all' ? this.db.stmts.getLeaderboardPeriodic.all(guild.id, since) : this.db.stmts.getLeaderboardPeriodicCategory.all(guild.id, since, cat);
             }
         }
-        if (!rows || rows.length === 0) return interaction.editReply({ content: '📊 No data available for this leaderboard yet!' });
+        
+        if (!rows || rows.length === 0) {
+            return interaction.editReply({ content: '📊 No data available for this leaderboard yet!' });
+        }
+
+        // Add rank number to each row
         rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
 
-        const imageBuffer = await renderLeaderboardCard({ title: 'Leaderboard', rows, guild, userRank: userRankRow, subtitle });
-        return interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' })] });
+        const userIds = rows.map(r => r.userId);
+        const members = await guild.members.fetch({ user: userIds }).catch(() => new Map());
+
+        const leaderboardEntries = rows.map(row => {
+            const member = members.get(row.userId);
+            const name = member?.displayName || 'Unknown User';
+            const score = formatNumber(row.score);
+            const rankEmoji = { 1: '🥇', 2: '🥈', 3: '🥉' }[row.rank] || `**${row.rank}.**`;
+            return `${rankEmoji} ${name} - \`${score}\``;
+        });
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`🏆 Leaderboard: ${subtitle}`)
+            .setColor(0x3498db)
+            .setDescription(leaderboardEntries.join('\n'))
+            .setTimestamp();
+            
+        if (userRankRow && !rows.some(r => r.userId === user.id)) {
+            embed.setFooter({ text: `Your Rank: #${userRankRow.rank} with ${formatNumber(userRankRow.score)} points` });
+        }
+
+        return interaction.editReply({ embeds: [embed] });
     }
 
     async handleBuddy(interaction) {
@@ -445,12 +465,10 @@ async function main() {
 
     const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-    // FIX: Use 'clientReady' event to address DeprecationWarning
     client.once('clientReady', (c) => {
         console.log(`🤖 Logged in as ${c.user.tag}`);
         console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
         
-        // Start reminder checker
         setInterval(() => {
             const now = Date.now();
             const dueReminders = database.stmts.getDueReminders.all(now);
@@ -462,16 +480,14 @@ async function main() {
                 }).catch(console.error);
                 database.stmts.deleteReminder.run(reminder.id);
             }
-        }, 60 * 1000); // Check every minute
+        }, 60 * 1000);
     });
 
-    // FIX: Major refactor of interaction handling to prevent timeouts and crashes
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isChatInputCommand() || !interaction.guild) return;
         
         try {
-            // Immediately defer the reply to avoid the 3-second timeout
-            const ephemeralCommands = ['junk', 'buddy', 'nudge', 'remind', 'admin'];
+            const ephemeralCommands = ['junk', 'buddy', 'nudge', 'remind', 'admin', 'myscore'];
             const shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
             await interaction.deferReply({ ephemeral: shouldBeEphemeral });
 
@@ -498,12 +514,10 @@ async function main() {
             }
         } catch (err) {
             console.error(`❌ Error handling command ${interaction.commandName}:`, err);
-            // Since we always defer, we only need to edit the reply on error.
             await interaction.editReply({ 
                 content: `❌ An error occurred while processing your command.`, 
-                // FIX: Use flags to address DeprecationWarning
                 flags: [MessageFlags.Ephemeral] 
-            }).catch(console.error); // catch errors on the error handler itself
+            }).catch(console.error);
         }
     });
 
