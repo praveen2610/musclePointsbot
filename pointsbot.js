@@ -107,7 +107,7 @@ class PointsDatabase {
     initSchema() {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS points (
-            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0,
             gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
             exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0,
             current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
@@ -123,7 +123,7 @@ class PointsDatabase {
           CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
         `);
     }
-    
+
     prepareStatements() {
         const stmts = {};
         stmts.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
@@ -134,18 +134,6 @@ class PointsDatabase {
         stmts.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
         stmts.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`),
         stmts.getLeaderboardAllTime = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id = ? AND total > 0 ORDER BY total DESC LIMIT 10`);
-        
-        // --- FIX 1: ADDED THIS STATEMENT ---
-        stmts.getUserRankAllTime = this.db.prepare(`
-            WITH Ranks AS (
-                SELECT user_id, RANK() OVER (ORDER BY total DESC) as rank, total as score
-                FROM points
-                WHERE guild_id = ?
-            )
-            SELECT rank, score FROM Ranks WHERE user_id = ?
-        `);
-        // ------------------------------------
-
         stmts.getLeaderboardPeriodic = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`);
         stmts.getLeaderboardPeriodicCategory = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id = ? AND ts >= ? AND category = ? AND amount > 0 GROUP BY user_id HAVING score > 0 ORDER BY score DESC LIMIT 10`);
         stmts.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
@@ -156,12 +144,23 @@ class PointsDatabase {
         stmts.addReminder = this.db.prepare(`INSERT INTO reminders (guild_id, user_id, activity, due_at) VALUES (?, ?, ?, ?)`);
         stmts.getDueReminders = this.db.prepare(`SELECT id, guild_id, user_id, activity FROM reminders WHERE due_at <= ?`);
         stmts.deleteReminder = this.db.prepare(`DELETE FROM reminders WHERE id = ?`);
-        for (const category of Object.keys(POINTS)) {
+        
+        // <<< FIX: Added the missing prepared statement for getting a user's rank >>>
+        stmts.getUserRankAllTime = this.db.prepare(`
+            WITH Ranks AS (
+                SELECT user_id, RANK() OVER (ORDER BY total DESC) as rank, total as score
+                FROM points
+                WHERE guild_id = ?
+            )
+            SELECT rank, score FROM Ranks WHERE user_id = ?
+        `);
+
+        for(const category of Object.keys(POINTS)) {
             stmts[`getLeaderboard_${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
         }
         this.stmts = stmts;
     }
-    
+
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
         this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
         const modAmount = Number(amount) || 0;
@@ -172,7 +171,7 @@ class PointsDatabase {
             targetCategory = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
         }
         this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategory, add: modAmount });
-        this.stmts.logPoints.run(guildId, userId, category, modAmount, Math.floor(Date.now() / 1000), reason, notes);
+        this.stmts.logPoints.run(guildId, userId, category, modAmount, Date.now(), reason, notes);
         if (modAmount > 0) {
             this.updateStreak(guildId, userId);
             return this.checkAchievements(guildId, userId);
@@ -217,7 +216,7 @@ class PointsDatabase {
         }
         return newAchievements;
     }
-    
+
     close() { this.db.close(); }
 }
 
@@ -227,9 +226,9 @@ class PointsDatabase {
 const formatNumber = (n) => (Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
 const getUserRank = (total) => RANKS.reduce((acc, rank) => total >= rank.min ? rank : acc, RANKS[0]);
-function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next === null) return { pct: 100, cur, need: 0 }; const span = cur.next - cur.min; const done = total - cur.min; return { pct: Math.max(0, Math.min(100, Math.floor((done / span) * 100))), cur, need: cur.next - total }; }
+function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next === null) return { pct: 100, cur, need: 0 }; const span = cur.next - cur.min, done = total - cur.min; return { pct: Math.max(0, Math.min(100, Math.floor((done / span) * 100))), cur, need: cur.next - total }; }
 const formatCooldown = (ms) => `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
-function getPeriodStart(period = 'week') { const now = new Date(); switch (period) { case 'day': now.setHours(0, 0, 0, 0); return Math.floor(now.getTime() / 1000); case 'month': return Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000); case 'year': return Math.floor(new Date(now.getFullYear(), 0, 1).getTime() / 1000); case 'week': default: const dayOfWeek = now.getDay(); const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); now.setDate(diff); now.setHours(0, 0, 0, 0); return Math.floor(now.getTime() / 1000); } }
+function getPeriodStart(period = 'week') { const now = new Date(); switch (period) { case 'day': return now.setHours(0, 0, 0, 0); case 'month': return new Date(now.getFullYear(), now.getMonth(), 1).getTime(); case 'year': return new Date(now.getFullYear(), 0, 1).getTime(); case 'week': default: const dayOfWeek = now.getDay(); const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); return new Date(now.setDate(diff)).setHours(0, 0, 0, 0); } }
 function createKeepAliveServer() { http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('Bot is alive and running.'); }).listen(process.env.PORT || 3000, () => { console.log('✅ Keep-alive server started.'); }); }
 async function renderLeaderboardCard({ title, rows, guild, userRank, subtitle = null }) { const userIds = [...rows.map(r => r.userId)]; if (userRank) userIds.push(userRank.userId); const members = await guild.members.fetch({ user: userIds }).catch(() => new Map()); const userRows = rows.map(row => { const member = members.get(row.userId); const user = member?.user; return { rank: row.rank, avatarUrl: user?.displayAvatarURL({ extension: 'png', size: 256 }) || 'https://cdn.discordapp.com/embed/avatars/0.png', displayName: (member?.displayName || user?.username || 'Unknown User').replace(/[<>]/g, ''), score: formatNumber(row.score) }; }); let userRankHtml = ''; if (userRank && !rows.some(r => r.userId === userRank.userId)) { const member = members.get(userRank.userId); const user = member?.user; const avatarUrl = user?.displayAvatarURL({ extension: 'png', size: 256 }) || 'https://cdn.discordapp.com/embed/avatars/0.png'; const displayName = (member?.displayName || user?.username || 'You').replace(/[<>]/g, ''); userRankHtml = `<div class="row self"><div class="rank-badge self-badge">#${userRank.rank}</div><div class="avatar-container"><img class="avatar" src="${avatarUrl}" alt="${displayName}" /></div><div class="user-info"><div class="name">${displayName}</div><div class="user-tag">Your Rank</div></div><div class="score">${formatNumber(userRank.score)}</div></div>`; } const guildIcon = guild.iconURL({ extension: 'png', size: 256 }); const finalSubtitle = subtitle || `Top ${rows.length} Players`; const html = `<!DOCTYPE html><html><head><meta charset="utf-8" /><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%);color:#e2e8f0;width:900px;padding:40px;-webkit-font-smoothing:antialiased;}.card{background:linear-gradient(180deg, #1e293b 0%, #0f172a 100%);border-radius:24px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);border:1px solid rgba(148,163,184,0.1);}.header{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);padding:32px;display:flex;align-items:center;gap:20px;border-bottom:3px solid rgba(59,130,246,0.3);}.guild-icon{width:72px;height:72px;border-radius:20px;box-shadow:0 10px 25px rgba(0,0,0,0.3);border:3px solid rgba(255,255,255,0.2);}.header-text{flex:1;}.title{font-size:32px;font-weight:900;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,0.3);letter-spacing:-.5px;margin-bottom:4px;}.subtitle{font-size:16px;color:rgba(255,255,255,0.9);font-weight:500;text-transform:uppercase;letter-spacing:1px;}.leaderboard-content{padding:8px;}.row{display:flex;align-items:center;gap:16px;padding:16px 24px;margin:8px 0;background:rgba(30,41,59,0.5);border-radius:16px;transition:all .3s ease;border:1px solid transparent;}.row.top3{background:linear-gradient(135deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%);border:1px solid rgba(59,130,246,0.3);}.rank-badge{min-width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;border-radius:12px;background:rgba(71,85,105,0.5);color:#94a3b8;border:2px solid rgba(148,163,184,0.2);}.rank-badge.gold{background:linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);color:#78350f;box-shadow:0 4px 15px rgba(251,191,36,0.4);border-color:#fde047;}.rank-badge.silver{background:linear-gradient(135deg, #e5e7eb 0%, #d1d5db 100%);color:#374151;box-shadow:0 4px 15px rgba(229,231,235,0.4);border-color:#f3f4f6;}.rank-badge.bronze{background:linear-gradient(135deg, #f97316 0%, #ea580c 100%);color:#7c2d12;box-shadow:0 4px 15px rgba(249,115,22,0.4);border-color:#fb923c;}.avatar{width:56px;height:56px;border-radius:50%;border:3px solid rgba(148,163,184,0.3);box-shadow:0 4px 12px rgba(0,0,0,0.3);}.top3 .avatar{border-color:rgba(59,130,246,0.6);box-shadow:0 4px 20px rgba(59,130,246,0.4);}.user-info{flex:1;min-width:0;}.name{font-weight:700;font-size:18px;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}.user-tag{font-size:13px;color:#94a3b8;font-weight:500;}.score{font-weight:900;font-size:24px;background:linear-gradient(135deg, #10b981 0%, #059669 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;min-width:80px;text-align:right;}.row.self{margin-top:16px;background:linear-gradient(135deg, rgba(59,130,246,0.2) 0%, rgba(139,92,246,0.2) 100%);border:2px solid #3b82f6;box-shadow:0 8px 20px rgba(59,130,246,0.3);}.rank-badge.self-badge{background:linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);color:#fff;border-color:#60a5fa;}</style></head><body><div class="card"><div class="header">${guildIcon ? `<img src="${guildIcon}" class="guild-icon" alt="Server Icon" />` : ''}<div class="header-text"><h1 class="title">${title}</h1><div class="subtitle">${finalSubtitle} • ${guild.name}</div></div></div><div class="leaderboard-content">${userRows.map(u => `<div class="row ${u.rank <= 3 ? 'top3' : ''}"><div class="rank-badge ${u.rank === 1 ? 'gold' : u.rank === 2 ? 'silver' : u.rank === 3 ? 'bronze' : ''}">#${u.rank}</div><div class="avatar-container"><img class="avatar" src="${u.avatarUrl}" alt="${u.displayName}" /></div><div class="user-info"><div class="name">${u.displayName}</div><div class="user-tag">Rank #${u.rank}</div></div><div class="score">${u.score}</div></div>`).join('')}${userRankHtml}</div></div></body></html>`;
     return nodeHtmlToImage({ html, puppeteerArgs: { args: ['--no-sandbox', '--disable-setuid-sandbox'] } });
@@ -274,18 +273,14 @@ class CommandHandler {
 
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
         const { cur, need } = nextRankProgress(userRow.total);
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`**+${formatNumber(amount)}** points for **${category}** claimed by ${user.toString()}!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Current Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
+        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`**+${formatNumber(amount)}** points for **${category}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Current Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
         if (need > 0) embed.setFooter({ text: `Only ${formatNumber(need)} points to the next rank!` });
-        
-        // --- FIX 2: REMOVED `ephemeral: true` ---
+
+        // <<< FIX: Removed `ephemeral: true` to make the reply public >>>
         const replyPayload = { embeds: [embed] };
-        // ----------------------------------------
-        
         if (newAchievements.length > 0) {
             const achievementEmbed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement Unlocked!').setDescription(newAchievements.map(a => `**${a.name}**: ${a.description}`).join('\n'));
-            // Send achievement as a follow-up, which can be ephemeral
-            await interaction.reply(replyPayload);
-            return interaction.followUp({ embeds: [achievementEmbed], ephemeral: true });
+            replyPayload.embeds.push(achievementEmbed);
         }
         return interaction.reply(replyPayload);
     }
@@ -309,13 +304,14 @@ class CommandHandler {
             { name: 'Total Points', value: formatNumber(userRow.total), inline: true },
             { name: 'Current Streak', value: `🔥 ${userRow.current_streak || 0} days`, inline: true },
             { name: 'Progress to Next Rank', value: progressBar(pct), inline: false },
-            { name: 'Achievements', value: achievements.length > 0 ? achievements.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None yet!' }
+            { name: 'Achievements', value: achievements.length > 0 ? achievements.map(id => `**${ACHIEVEMENTS.find(a=>a.id===id)?.name || id}**`).join(', ') : 'None yet!' }
         );
         if (need > 0) embed.setFooter({ text: `${formatNumber(need)} points to the next rank!` });
         return interaction.reply({ embeds: [embed] });
     }
 
     async handleLeaderboard(interaction) {
+        await interaction.deferReply();
         const { guild, user, options } = interaction;
         const period = options.getString('period');
         const cat = options.getString('category') ?? 'all';
@@ -371,19 +367,19 @@ class CommandHandler {
         const { guild, user, options } = interaction;
         const targetUser = options.getUser('user', true);
         const activity = options.getString('activity', true);
-    
+
         if (targetUser.bot || targetUser.id === user.id) {
             return interaction.reply({ content: "You can't nudge a bot or yourself.", ephemeral: true });
         }
-    
+
         const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.ManageGuild);
         const buddy = this.db.stmts.getBuddy.get(guild.id, user.id);
         const isBuddy = buddy?.buddy_id === targetUser.id;
-    
+
         if (!isAdmin && !isBuddy) {
             return interaction.reply({ content: "You can only nudge your designated buddy or ask an admin to do it.", ephemeral: true });
         }
-    
+
         try {
             await targetUser.send(`⏰ <@${user.id}> from **${guild.name}** is nudging you to do your **${activity}**!`);
             return interaction.reply({ content: `✅ Nudge sent to <@${targetUser.id}>.`, ephemeral: true });
@@ -391,15 +387,15 @@ class CommandHandler {
             return interaction.reply({ content: `❌ Could not send a DM to that user. They may have DMs disabled.`, ephemeral: true });
         }
     }
-    
+
     async handleRemind(interaction) {
         const { guild, user, options } = interaction;
         const activity = options.getString('activity', true);
         const hours = options.getNumber('hours', true);
         const dueAt = Date.now() + hours * 60 * 60 * 1000;
-    
+
         this.db.stmts.addReminder.run(guild.id, user.id, activity, dueAt);
-    
+
         return interaction.reply({ content: `⏰ Got it! I'll send you a DM to remind you about **${activity}** in ${hours} hour(s).`, ephemeral: true });
     }
 
@@ -413,11 +409,11 @@ class CommandHandler {
 
         if (subcommand === 'award') {
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount, reason: 'admin:award', notes: reason });
-            return interaction.editReply({ content: `✅ Awarded ${formatNumber(amount)} ${category} points to <@${targetUser.id}>.` });
+            return interaction.reply({ content: `✅ Awarded ${formatNumber(amount)} ${category} points to <@${targetUser.id}>.` });
         }
         if (subcommand === 'deduct') {
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount: -amount, reason: 'admin:deduct', notes: reason });
-            return interaction.editReply({ content: `✅ Deducted ${formatNumber(amount)} ${category} points from <@${targetUser.id}>.` });
+            return interaction.reply({ content: `✅ Deducted ${formatNumber(amount)} ${category} points from <@${targetUser.id}>.` });
         }
     }
 }
@@ -451,7 +447,7 @@ async function main() {
     client.once('ready', (c) => {
         console.log(`🤖 Logged in as ${c.user.tag}`);
         console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
-        
+
         // Start reminder checker
         setInterval(() => {
             const now = Date.now();
@@ -472,10 +468,6 @@ async function main() {
         const { commandName } = interaction;
 
         try {
-            if (['leaderboard', 'admin'].includes(commandName)) {
-                await interaction.deferReply({ ephemeral: commandName === 'admin' });
-            }
-
             const claimCategories = Object.keys(POINTS);
             if (claimCategories.includes(commandName)) {
                 await handler.handleClaim(interaction, commandName, commandName);
@@ -492,7 +484,10 @@ async function main() {
                     case 'buddy': await handler.handleBuddy(interaction); break;
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
-                    case 'admin': await handler.handleAdmin(interaction); break;
+                    case 'admin':
+                        await interaction.deferReply({ ephemeral: true });
+                        await handler.handleAdmin(interaction);
+                        break;
                 }
             }
         } catch (err) {
