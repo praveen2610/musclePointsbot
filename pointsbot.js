@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Version (with Badminton Fix)
+// pointsbot.js - Professional Version (with Admin Protein Commands)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -306,6 +306,9 @@ function buildCommands() {
                         .map(([key, val]) => ({ name: val.name, value: key }))
                 ))
                 .addNumberOption(o => o.setName('grams').setDescription('How many grams?').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('log_direct').setDescription('Log a specific amount of protein (e.g., from a label)')
+                .addNumberOption(o => o.setName('grams').setDescription('How many grams of pure protein did you have?').setRequired(true).setMinValue(1))
+                .addStringOption(o => o.setName('source').setDescription('What was the source? (e.g., Protein Bar)').setRequired(false)))
             .addSubcommand(sub => sub.setName('total').setDescription("View your total protein intake for today")
                 .addUserOption(o => o.setName('user').setDescription('View another user\'s total (optional)'))),
 
@@ -318,9 +321,19 @@ function buildCommands() {
         new SlashCommandBuilder().setName('buddy').setDescription('👯 Set or view your workout buddy').addUserOption(o => o.setName('user').setDescription('Your buddy (leave empty to view)')),
         new SlashCommandBuilder().setName('nudge').setDescription('👉 Nudge a user to work out').addUserOption(o => o.setName('user').setRequired(true).setDescription('The user to nudge')).addStringOption(o => o.setName('activity').setRequired(true).setDescription('The activity to remind them about')),
         new SlashCommandBuilder().setName('remind').setDescription('⏰ Set a personal workout reminder').addStringOption(o => o.setName('activity').setRequired(true).setDescription('What to remind you about')).addNumberOption(o => o.setName('hours').setRequired(true).setDescription('In how many hours?').setMinValue(1)),
+        
+        // MODIFIED: Added add_protein and deduct_protein subcommands
         new SlashCommandBuilder().setName('admin').setDescription('🛠️ Admin commands').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
             .addSubcommand(sub => sub.setName('award').setDescription('Award points to a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to award')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to award')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices, {name: 'Exercise', value: 'exercise'})).addStringOption(o => o.setName('reason').setDescription('Reason for the award')))
-            .addSubcommand(sub => sub.setName('deduct').setDescription('Deduct points from a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to deduct')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices, {name: 'Exercise', value: 'exercise'})).addStringOption(o => o.setName('reason').setDescription('Reason for the deduction'))),
+            .addSubcommand(sub => sub.setName('deduct').setDescription('Deduct points from a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to deduct')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices, {name: 'Exercise', value: 'exercise'})).addStringOption(o => o.setName('reason').setDescription('Reason for the deduction')))
+            .addSubcommand(sub => sub.setName('add_protein').setDescription('Manually add protein to a user\'s daily total.')
+                .addUserOption(o => o.setName('user').setDescription('The user to add protein to').setRequired(true))
+                .addNumberOption(o => o.setName('grams').setDescription('How many grams of protein to add').setRequired(true).setMinValue(0.1))
+                .addStringOption(o => o.setName('reason').setDescription('Reason for the manual addition')))
+            .addSubcommand(sub => sub.setName('deduct_protein').setDescription('Manually deduct protein from a user\'s daily total.')
+                .addUserOption(o => o.setName('user').setDescription('The user to deduct protein from').setRequired(true))
+                .addNumberOption(o => o.setName('grams').setDescription('How many grams of protein to deduct').setRequired(true).setMinValue(0.1))
+                .addStringOption(o => o.setName('reason').setDescription('Reason for the manual deduction'))),
     ].map(c => c.toJSON());
 }
 
@@ -332,7 +345,6 @@ class CommandHandler {
 
     async handleClaim(interaction, category, cooldownKey, explicitAmount) {
         const { guild, user } = interaction;
-        // MODIFIED: This is the corrected line
         const amount = Number(explicitAmount ?? POINTS[category]) || 0;
         
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
@@ -455,17 +467,24 @@ class CommandHandler {
 
         let proteinGrams = 0;
         let itemName = '';
-        const itemKey = options.getString('item', true);
-        const source = PROTEIN_SOURCES[itemKey];
-
+        
         if (subcommand === 'add_item') {
+            const itemKey = options.getString('item', true);
+            const source = PROTEIN_SOURCES[itemKey];
             const quantity = options.getInteger('quantity', true);
             proteinGrams = source.protein_per_unit * quantity;
             itemName = `${quantity} ${source.name}`;
         } else if (subcommand === 'add_grams') {
+            const itemKey = options.getString('item', true);
+            const source = PROTEIN_SOURCES[itemKey];
             const grams = options.getNumber('grams', true);
             proteinGrams = source.protein_per_unit * grams;
             itemName = `${grams}g of ${source.name}`;
+        } else if (subcommand === 'log_direct') {
+            const grams = options.getNumber('grams', true);
+            const sourceName = options.getString('source') || 'a direct source';
+            proteinGrams = grams;
+            itemName = sourceName;
         }
 
         this.db.stmts.addProteinLog.run(guild.id, user.id, itemName, proteinGrams, Math.floor(Date.now() / 1000));
@@ -632,21 +651,41 @@ class CommandHandler {
         return interaction.editReply({ content: `⏰ Got it! I'll send you a DM to remind you about **${activity}** in ${hours} hour(s).` });
     }
 
+    // MODIFIED: Added logic for the new protein admin commands
     async handleAdmin(interaction) {
         const { guild, user, options } = interaction;
         const subcommand = options.getSubcommand();
         const targetUser = options.getUser('user', true);
-        const amount = options.getNumber('amount', true);
-        const category = options.getString('category', true);
-        const reason = options.getString('reason') || `Admin action by ${user.tag}`;
 
-        if (subcommand === 'award') {
-            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount, reason: 'admin:award', notes: reason });
-            return interaction.editReply({ content: `✅ Awarded ${formatNumber(amount)} ${category} points to <@${targetUser.id}>.` });
+        if (subcommand === 'award' || subcommand === 'deduct') {
+            const amount = options.getNumber('amount', true);
+            const category = options.getString('category', true);
+            const reason = options.getString('reason') || `Admin action by ${user.tag}`;
+            const finalAmount = subcommand === 'award' ? amount : -amount;
+
+            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount: finalAmount, reason: `admin:${subcommand}`, notes: reason });
+            const action = subcommand === 'award' ? 'Awarded' : 'Deducted';
+            return interaction.editReply({ content: `✅ ${action} ${formatNumber(amount)} ${category} points for <@${targetUser.id}>.` });
         }
-        if (subcommand === 'deduct') {
-            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category, amount: -amount, reason: 'admin:deduct', notes: reason });
-            return interaction.editReply({ content: `✅ Deducted ${formatNumber(amount)} ${category} points from <@${targetUser.id}>.` });
+
+        if (subcommand === 'add_protein' || subcommand === 'deduct_protein') {
+            let grams = options.getNumber('grams', true);
+            const reason = options.getString('reason') || `Admin action by ${user.tag}`;
+
+            if (subcommand === 'deduct_protein') {
+                grams = -grams;
+            }
+
+            this.db.stmts.addProteinLog.run(
+                guild.id,
+                targetUser.id,
+                reason,
+                grams,
+                Math.floor(Date.now() / 1000)
+            );
+
+            const action = subcommand === 'add_protein' ? 'Added' : 'Deducted';
+            return interaction.editReply({ content: `✅ ${action} ${Math.abs(grams)}g of protein for <@${targetUser.id}>.` });
         }
     }
 }
