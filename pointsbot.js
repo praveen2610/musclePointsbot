@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Version (with new protein items and cooldown)
+// pointsbot.js - Professional Version (with Badminton Fix)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -22,30 +22,22 @@ const CONFIG = {
     dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
 };
 
-// MODIFIED: Added dahl and mutton
 const PROTEIN_SOURCES = {
-    // -- Meats & Poultry (protein per gram, cooked) --
     chicken_breast: { name: 'Chicken Breast (Cooked)', unit: 'gram', protein_per_unit: 0.31 },
     chicken_thigh:  { name: 'Chicken Thigh (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
     ground_beef:    { name: 'Ground Beef 85/15 (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
     steak:          { name: 'Steak (Sirloin, Cooked)', unit: 'gram', protein_per_unit: 0.29 },
     pork_chop:      { name: 'Pork Chop (Cooked)', unit: 'gram', protein_per_unit: 0.27 },
     mutton:         { name: 'Mutton (Cooked)', unit: 'gram', protein_per_unit: 0.27 },
-
-    // -- Seafood (protein per gram, cooked) --
     salmon: { name: 'Salmon (Cooked)', unit: 'gram', protein_per_unit: 0.25 },
     tuna:   { name: 'Tuna (Canned in water)', unit: 'gram', protein_per_unit: 0.23 },
     shrimp: { name: 'Shrimp (Cooked)', unit: 'gram', protein_per_unit: 0.24 },
     cod:    { name: 'Cod (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
-
-    // -- Dairy & Eggs --
     egg:            { name: 'Large Egg', unit: 'item', protein_per_unit: 6 },
     egg_white:      { name: 'Large Egg White', unit: 'item', protein_per_unit: 3.6 },
     greek_yogurt:   { name: 'Greek Yogurt', unit: 'gram', protein_per_unit: 0.10 },
     cottage_cheese: { name: 'Cottage Cheese', unit: 'gram', protein_per_unit: 0.11 },
     milk:           { name: 'Milk (Dairy)', unit: 'gram', protein_per_unit: 0.034 },
-
-    // -- Plant-Based (protein per gram, cooked/prepared) --
     tofu:        { name: 'Tofu (Firm)', unit: 'gram', protein_per_unit: 0.08 },
     edamame:     { name: 'Edamame (Shelled)', unit: 'gram', protein_per_unit: 0.11 },
     lentils:     { name: 'Lentils (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
@@ -55,12 +47,9 @@ const PROTEIN_SOURCES = {
     quinoa:      { name: 'Quinoa (Cooked)', unit: 'gram', protein_per_unit: 0.04 },
     almonds:     { name: 'Almonds', unit: 'gram', protein_per_unit: 0.21 },
     peanuts:     { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 },
-    
-    // -- Supplements (protein per gram of powder) --
     protein_powder: { name: 'Protein Powder', unit: 'gram', protein_per_unit: 0.80 }
 };
 
-// MODIFIED: Changed exercise cooldown to 30 minutes
 const COOLDOWNS = {
     gym: 12 * 60 * 60 * 1000,
     badminton: 12 * 60 * 60 * 1000,
@@ -343,7 +332,8 @@ class CommandHandler {
 
     async handleClaim(interaction, category, cooldownKey, explicitAmount) {
         const { guild, user } = interaction;
-        const amount = Number(explicitAmount) || 0;
+        // MODIFIED: This is the corrected line
+        const amount = Number(explicitAmount ?? POINTS[category]) || 0;
         
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
         if (remaining > 0) {
