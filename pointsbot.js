@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Version (with Performance Fix)
+// pointsbot.js - Professional Version (with new protein items and cooldown)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -22,13 +22,52 @@ const CONFIG = {
     dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
 };
 
+// MODIFIED: Added dahl and mutton
+const PROTEIN_SOURCES = {
+    // -- Meats & Poultry (protein per gram, cooked) --
+    chicken_breast: { name: 'Chicken Breast (Cooked)', unit: 'gram', protein_per_unit: 0.31 },
+    chicken_thigh:  { name: 'Chicken Thigh (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
+    ground_beef:    { name: 'Ground Beef 85/15 (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
+    steak:          { name: 'Steak (Sirloin, Cooked)', unit: 'gram', protein_per_unit: 0.29 },
+    pork_chop:      { name: 'Pork Chop (Cooked)', unit: 'gram', protein_per_unit: 0.27 },
+    mutton:         { name: 'Mutton (Cooked)', unit: 'gram', protein_per_unit: 0.27 },
+
+    // -- Seafood (protein per gram, cooked) --
+    salmon: { name: 'Salmon (Cooked)', unit: 'gram', protein_per_unit: 0.25 },
+    tuna:   { name: 'Tuna (Canned in water)', unit: 'gram', protein_per_unit: 0.23 },
+    shrimp: { name: 'Shrimp (Cooked)', unit: 'gram', protein_per_unit: 0.24 },
+    cod:    { name: 'Cod (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
+
+    // -- Dairy & Eggs --
+    egg:            { name: 'Large Egg', unit: 'item', protein_per_unit: 6 },
+    egg_white:      { name: 'Large Egg White', unit: 'item', protein_per_unit: 3.6 },
+    greek_yogurt:   { name: 'Greek Yogurt', unit: 'gram', protein_per_unit: 0.10 },
+    cottage_cheese: { name: 'Cottage Cheese', unit: 'gram', protein_per_unit: 0.11 },
+    milk:           { name: 'Milk (Dairy)', unit: 'gram', protein_per_unit: 0.034 },
+
+    // -- Plant-Based (protein per gram, cooked/prepared) --
+    tofu:        { name: 'Tofu (Firm)', unit: 'gram', protein_per_unit: 0.08 },
+    edamame:     { name: 'Edamame (Shelled)', unit: 'gram', protein_per_unit: 0.11 },
+    lentils:     { name: 'Lentils (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
+    dahl:        { name: 'Dahl (Cooked Lentils)', unit: 'gram', protein_per_unit: 0.09 },
+    chickpeas:   { name: 'Chickpeas (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
+    black_beans: { name: 'Black Beans (Cooked)', unit: 'gram', protein_per_unit: 0.08 },
+    quinoa:      { name: 'Quinoa (Cooked)', unit: 'gram', protein_per_unit: 0.04 },
+    almonds:     { name: 'Almonds', unit: 'gram', protein_per_unit: 0.21 },
+    peanuts:     { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 },
+    
+    // -- Supplements (protein per gram of powder) --
+    protein_powder: { name: 'Protein Powder', unit: 'gram', protein_per_unit: 0.80 }
+};
+
+// MODIFIED: Changed exercise cooldown to 30 minutes
 const COOLDOWNS = {
     gym: 12 * 60 * 60 * 1000,
     badminton: 12 * 60 * 60 * 1000,
     cricket: 12 * 60 * 60 * 1000,
     swimming: 12 * 60 * 60 * 1000,
     yoga: 12 * 60 * 60 * 1000,
-    exercise: 6 * 60 * 60 * 1000, 
+    exercise: 30 * 60 * 1000, // 30 minutes
 };
 
 const POINTS = {
@@ -124,6 +163,14 @@ class PointsDatabase {
           CREATE TABLE IF NOT EXISTS reminders ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER );
           CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
           CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
+          CREATE TABLE IF NOT EXISTS protein_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            item_name TEXT NOT NULL,
+            protein_grams REAL NOT NULL,
+            timestamp INTEGER NOT NULL
+          );
         `);
     }
     
@@ -153,6 +200,9 @@ class PointsDatabase {
         stmts.addReminder = this.db.prepare(`INSERT INTO reminders (guild_id, user_id, activity, due_at) VALUES (?, ?, ?, ?)`);
         stmts.getDueReminders = this.db.prepare(`SELECT id, guild_id, user_id, activity FROM reminders WHERE due_at <= ?`);
         stmts.deleteReminder = this.db.prepare(`DELETE FROM reminders WHERE id = ?`);
+        stmts.addProteinLog = this.db.prepare(`INSERT INTO protein_log (guild_id, user_id, item_name, protein_grams, timestamp) VALUES (?, ?, ?, ?, ?)`);
+        stmts.getDailyProtein = this.db.prepare(`SELECT SUM(protein_grams) AS total FROM protein_log WHERE guild_id = ? AND user_id = ? AND timestamp >= ?`);
+
         for (const category of Object.keys(POINTS)) {
             stmts[`getLeaderboard_${category}`] = this.db.prepare(`SELECT user_id as userId, ${category} as score FROM points WHERE guild_id = ? AND ${category} > 0 ORDER BY ${category} DESC LIMIT 10`);
         }
@@ -251,6 +301,24 @@ function buildCommands() {
             .addSubcommand(sub => sub.setName('pushup').setDescription(`💪 Log a pushup workout`)
                 .addNumberOption(o => o.setName('reps').setDescription('Reps per set').setRequired(true).setMinValue(1))
                 .addNumberOption(o => o.setName('sets').setDescription('Number of sets').setRequired(true).setMinValue(1))),
+
+        new SlashCommandBuilder().setName('protein').setDescription('🥩 Track your protein intake for the day')
+            .addSubcommand(sub => sub.setName('add_item').setDescription('Add a protein source by item count (e.g., eggs)')
+                .addStringOption(o => o.setName('item').setDescription('The food item you ate').setRequired(true).addChoices(
+                    ...Object.entries(PROTEIN_SOURCES)
+                        .filter(([key, val]) => val.unit === 'item')
+                        .map(([key, val]) => ({ name: val.name, value: key }))
+                ))
+                .addIntegerOption(o => o.setName('quantity').setDescription('How many items? (e.g., 2 for 2 eggs)').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('add_grams').setDescription('Add a protein source by weight in grams')
+                .addStringOption(o => o.setName('item').setDescription('The food item you ate').setRequired(true).addChoices(
+                    ...Object.entries(PROTEIN_SOURCES)
+                        .filter(([key, val]) => val.unit === 'gram')
+                        .map(([key, val]) => ({ name: val.name, value: key }))
+                ))
+                .addNumberOption(o => o.setName('grams').setDescription('How many grams?').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('total').setDescription("View your total protein intake for today")
+                .addUserOption(o => o.setName('user').setDescription('View another user\'s total (optional)'))),
 
         new SlashCommandBuilder().setName('walking').setDescription(`🚶 Log walking by distance (${DISTANCE_RATES.walking} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 2.5)').setMinValue(0.1).setRequired(true)),
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging by distance (${DISTANCE_RATES.jogging} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 5)').setMinValue(0.1).setRequired(true)),
@@ -374,6 +442,56 @@ class CommandHandler {
         }
 
         return interaction.editReply({ embeds });
+    }
+
+    async handleProtein(interaction) {
+        const { guild, user, options } = interaction;
+        const subcommand = options.getSubcommand();
+        const targetUser = options.getUser('user') || user;
+
+        if (subcommand === 'total') {
+            const since = getPeriodStart('day');
+            const result = this.db.stmts.getDailyProtein.get(guild.id, targetUser.id, since);
+            const totalProtein = result?.total || 0;
+
+            const embed = new EmbedBuilder()
+                .setColor(0x5865F2)
+                .setTitle(`🥩 Daily Protein Total for ${targetUser.displayName}`)
+                .setDescription(`So far today, you have logged **${formatNumber(totalProtein)}g** of protein.`)
+                .setThumbnail(targetUser.displayAvatarURL());
+            
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        let proteinGrams = 0;
+        let itemName = '';
+        const itemKey = options.getString('item', true);
+        const source = PROTEIN_SOURCES[itemKey];
+
+        if (subcommand === 'add_item') {
+            const quantity = options.getInteger('quantity', true);
+            proteinGrams = source.protein_per_unit * quantity;
+            itemName = `${quantity} ${source.name}`;
+        } else if (subcommand === 'add_grams') {
+            const grams = options.getNumber('grams', true);
+            proteinGrams = source.protein_per_unit * grams;
+            itemName = `${grams}g of ${source.name}`;
+        }
+
+        this.db.stmts.addProteinLog.run(guild.id, user.id, itemName, proteinGrams, Math.floor(Date.now() / 1000));
+
+        const since = getPeriodStart('day');
+        const result = this.db.stmts.getDailyProtein.get(guild.id, user.id, since);
+        const totalProtein = result?.total || 0;
+
+        const embed = new EmbedBuilder()
+            .setColor(0x2ECC71)
+            .setTitle('✅ Protein Logged!')
+            .setDescription(`${user.toString()} added **${formatNumber(proteinGrams)}g** of protein from **${itemName}**.`)
+            .addFields({ name: 'Daily Total', value: `Your new total for today is **${formatNumber(totalProtein)}g** of protein.` })
+            .setThumbnail(user.displayAvatarURL());
+        
+        return interaction.editReply({ embeds: [embed] });
     }
 
     async handleJunk(interaction) {
@@ -573,7 +691,6 @@ async function main() {
         console.log(`🤖 Logged in as ${c.user.tag}`);
         console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
         
-        // FIX: Improved the reminder interval to be more robust and non-blocking
         setInterval(async () => {
             try {
                 const now = Date.now();
@@ -584,10 +701,8 @@ async function main() {
                         const user = await client.users.fetch(reminder.user_id);
                         await user.send(`⏰ Gentle reminder to do your **${reminder.activity}**!`);
                     } catch (err) {
-                        // This catch handles errors if the user can't be DMed
                         console.error(`Could not send reminder DM to user ${reminder.user_id}: ${err.message}`);
                     } finally {
-                        // Ensure the reminder is deleted even if the DM fails
                         database.stmts.deleteReminder.run(reminder.id);
                     }
                 }
@@ -602,8 +717,14 @@ async function main() {
         
         try {
             const ephemeralCommands = ['buddy', 'nudge', 'remind', 'admin', 'myscore'];
-            const shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
+            let shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
+            
+            if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') {
+                shouldBeEphemeral = true;
+            }
+
             await interaction.deferReply({ ephemeral: shouldBeEphemeral });
+
 
             const { commandName } = interaction;
             const claimCategories = Object.keys(POINTS);
@@ -613,6 +734,7 @@ async function main() {
             } else {
                 switch (commandName) {
                     case 'exercise': await handler.handleExercise(interaction); break;
+                    case 'protein': await handler.handleProtein(interaction); break;
                     case 'walking':
                     case 'jogging':
                     case 'running':
@@ -629,7 +751,6 @@ async function main() {
             }
         } catch (err) {
             console.error(`❌ Error handling command ${interaction.commandName}:`, err);
-            // Use editReply if the interaction has been deferred, otherwise you can't reply
             if (interaction.deferred || interaction.replied) {
                  await interaction.editReply({ 
                     content: `❌ An error occurred while processing your command.`, 
