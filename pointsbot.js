@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Version (with Public Junk Command)
+// pointsbot.js - Professional Version (with Performance Fix)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -376,7 +376,6 @@ class CommandHandler {
         return interaction.editReply({ embeds });
     }
 
-    // MODIFIED this function for public visibility and a positive message
     async handleJunk(interaction) {
         const { guild, user, options } = interaction;
         const item = options.getString('item', true);
@@ -574,16 +573,26 @@ async function main() {
         console.log(`🤖 Logged in as ${c.user.tag}`);
         console.log(`📊 Serving ${c.guilds.cache.size} server(s)`);
         
-        setInterval(() => {
-            const now = Date.now();
-            const dueReminders = database.stmts.getDueReminders.all(now);
-            for (const reminder of dueReminders) {
-                client.users.fetch(reminder.user_id).then(user => {
-                    user.send(`⏰ Gentle reminder to do your **${reminder.activity}**!`).catch(() => {
-                        console.error(`Could not send reminder DM to user ${reminder.user_id}`);
-                    });
-                }).catch(console.error);
-                database.stmts.deleteReminder.run(reminder.id);
+        // FIX: Improved the reminder interval to be more robust and non-blocking
+        setInterval(async () => {
+            try {
+                const now = Date.now();
+                const dueReminders = database.stmts.getDueReminders.all(now);
+
+                for (const reminder of dueReminders) {
+                    try {
+                        const user = await client.users.fetch(reminder.user_id);
+                        await user.send(`⏰ Gentle reminder to do your **${reminder.activity}**!`);
+                    } catch (err) {
+                        // This catch handles errors if the user can't be DMed
+                        console.error(`Could not send reminder DM to user ${reminder.user_id}: ${err.message}`);
+                    } finally {
+                        // Ensure the reminder is deleted even if the DM fails
+                        database.stmts.deleteReminder.run(reminder.id);
+                    }
+                }
+            } catch (err) {
+                console.error("Error in reminder processing interval:", err);
             }
         }, 60 * 1000);
     });
@@ -592,7 +601,6 @@ async function main() {
         if (!interaction.isChatInputCommand() || !interaction.guild) return;
         
         try {
-            // MODIFIED: Removed 'junk' to make it a public command
             const ephemeralCommands = ['buddy', 'nudge', 'remind', 'admin', 'myscore'];
             const shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
             await interaction.deferReply({ ephemeral: shouldBeEphemeral });
@@ -621,10 +629,13 @@ async function main() {
             }
         } catch (err) {
             console.error(`❌ Error handling command ${interaction.commandName}:`, err);
-            await interaction.editReply({ 
-                content: `❌ An error occurred while processing your command.`, 
-                flags: [MessageFlags.Ephemeral] 
-            }).catch(console.error);
+            // Use editReply if the interaction has been deferred, otherwise you can't reply
+            if (interaction.deferred || interaction.replied) {
+                 await interaction.editReply({ 
+                    content: `❌ An error occurred while processing your command.`, 
+                    flags: [MessageFlags.Ephemeral] 
+                }).catch(console.error);
+            }
         }
     });
 
