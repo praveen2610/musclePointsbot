@@ -1,4 +1,4 @@
-// pointsbot.js - Professional Version (Simple Leaderboard)
+// pointsbot.js - Professional Version (with Public Junk Command)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -26,18 +26,22 @@ const COOLDOWNS = {
     gym: 12 * 60 * 60 * 1000,
     badminton: 12 * 60 * 60 * 1000,
     cricket: 12 * 60 * 60 * 1000,
-    exercise: 6 * 60 * 60 * 1000,
     swimming: 12 * 60 * 60 * 1000,
     yoga: 12 * 60 * 60 * 1000,
+    exercise: 6 * 60 * 60 * 1000, 
 };
 
 const POINTS = {
     gym: 2,
     badminton: 5,
     cricket: 5,
-    exercise: 1,
     swimming: 3,
     yoga: 2,
+};
+
+const EXERCISE_RATES = {
+    yoga_per_minute: 0.2,
+    per_rep: 0.002,
 };
 
 const DISTANCE_RATES = {
@@ -217,7 +221,7 @@ class PointsDatabase {
 /* =========================
     UTILITIES
 ========================= */
-const formatNumber = (n) => (Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
+const formatNumber = (n) => (Math.round(n * 1000) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
 const getUserRank = (total) => RANKS.reduce((acc, rank) => total >= rank.min ? rank : acc, RANKS[0]);
 function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next === null) return { pct: 100, cur, need: 0 }; const span = cur.next - cur.min; const done = total - cur.min; return { pct: Math.max(0, Math.min(100, Math.floor((done / span) * 100))), cur, need: cur.next - total }; }
@@ -232,6 +236,22 @@ function buildCommands() {
     const activityChoices = Object.keys(POINTS).map(key => ({ name: key.charAt(0).toUpperCase() + key.slice(1), value: key }));
     return [
         ...Object.entries(POINTS).map(([name, points]) => new SlashCommandBuilder().setName(name).setDescription(`💪 Claim +${points} for ${name}`)),
+        
+        new SlashCommandBuilder().setName('exercise').setDescription('💪 Log a detailed exercise session')
+            .addSubcommand(sub => sub.setName('yoga').setDescription(`🧘 Log a yoga session (${EXERCISE_RATES.yoga_per_minute} points/min)`)
+                .addNumberOption(o => o.setName('minutes').setDescription('How many minutes did you do?').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('reps').setDescription(`💪 Log a per-rep exercise (${EXERCISE_RATES.per_rep} points/rep)`)
+                .addNumberOption(o => o.setName('count').setDescription('How many total reps did you do?').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('dumbbells').setDescription(`🏋️ Log a dumbbell workout`)
+                .addNumberOption(o => o.setName('reps').setDescription('Reps per set').setRequired(true).setMinValue(1))
+                .addNumberOption(o => o.setName('sets').setDescription('Number of sets').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('barbell').setDescription(`🏋️ Log a barbell workout`)
+                .addNumberOption(o => o.setName('reps').setDescription('Reps per set').setRequired(true).setMinValue(1))
+                .addNumberOption(o => o.setName('sets').setDescription('Number of sets').setRequired(true).setMinValue(1)))
+            .addSubcommand(sub => sub.setName('pushup').setDescription(`💪 Log a pushup workout`)
+                .addNumberOption(o => o.setName('reps').setDescription('Reps per set').setRequired(true).setMinValue(1))
+                .addNumberOption(o => o.setName('sets').setDescription('Number of sets').setRequired(true).setMinValue(1))),
+
         new SlashCommandBuilder().setName('walking').setDescription(`🚶 Log walking by distance (${DISTANCE_RATES.walking} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 2.5)').setMinValue(0.1).setRequired(true)),
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging by distance (${DISTANCE_RATES.jogging} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 5)').setMinValue(0.1).setRequired(true)),
         new SlashCommandBuilder().setName('running').setDescription(`💨 Log running by distance (${DISTANCE_RATES.running} points/km)`).addNumberOption(o => o.setName('km').setDescription('Kilometers (e.g., 3)').setMinValue(0.1).setRequired(true)),
@@ -242,8 +262,8 @@ function buildCommands() {
         new SlashCommandBuilder().setName('nudge').setDescription('👉 Nudge a user to work out').addUserOption(o => o.setName('user').setRequired(true).setDescription('The user to nudge')).addStringOption(o => o.setName('activity').setRequired(true).setDescription('The activity to remind them about')),
         new SlashCommandBuilder().setName('remind').setDescription('⏰ Set a personal workout reminder').addStringOption(o => o.setName('activity').setRequired(true).setDescription('What to remind you about')).addNumberOption(o => o.setName('hours').setRequired(true).setDescription('In how many hours?').setMinValue(1)),
         new SlashCommandBuilder().setName('admin').setDescription('🛠️ Admin commands').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-            .addSubcommand(sub => sub.setName('award').setDescription('Award points to a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to award')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to award')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices)).addStringOption(o => o.setName('reason').setDescription('Reason for the award')))
-            .addSubcommand(sub => sub.setName('deduct').setDescription('Deduct points from a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to deduct')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices)).addStringOption(o => o.setName('reason').setDescription('Reason for the deduction'))),
+            .addSubcommand(sub => sub.setName('award').setDescription('Award points to a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to award')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to award')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices, {name: 'Exercise', value: 'exercise'})).addStringOption(o => o.setName('reason').setDescription('Reason for the award')))
+            .addSubcommand(sub => sub.setName('deduct').setDescription('Deduct points from a user').addUserOption(o => o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o => o.setName('amount').setRequired(true).setDescription('Points to deduct')).addStringOption(o => o.setName('category').setRequired(true).setDescription('Category').addChoices(...activityChoices, {name: 'Exercise', value: 'exercise'})).addStringOption(o => o.setName('reason').setDescription('Reason for the deduction'))),
     ].map(c => c.toJSON());
 }
 
@@ -255,7 +275,7 @@ class CommandHandler {
 
     async handleClaim(interaction, category, cooldownKey, explicitAmount) {
         const { guild, user } = interaction;
-        const amount = Number(explicitAmount ?? POINTS[category]) || 0;
+        const amount = Number(explicitAmount) || 0;
         
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
         if (remaining > 0) {
@@ -286,14 +306,100 @@ class CommandHandler {
 
         return interaction.editReply({ embeds });
     }
+    
+    async handleExercise(interaction) {
+        const { guild, user, options } = interaction;
+        const subcommand = options.getSubcommand();
+        let amount = 0;
+        let description = '';
 
+        const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: 'exercise' });
+        if (remaining > 0) {
+            return interaction.editReply({ 
+                content: `⏳ Cooldown active for **exercise**. Try again in **${formatCooldown(remaining)}**.`,
+                flags: [MessageFlags.Ephemeral] 
+            });
+        }
+
+        switch (subcommand) {
+            case 'yoga': {
+                const minutes = options.getNumber('minutes', true);
+                amount = minutes * EXERCISE_RATES.yoga_per_minute;
+                description = `**+${formatNumber(amount)}** points for **${minutes} minutes** of Yoga`;
+                break;
+            }
+            case 'reps': {
+                const count = options.getNumber('count', true);
+                amount = count * EXERCISE_RATES.per_rep;
+                description = `**+${formatNumber(amount)}** points for **${count} total reps**`;
+                break;
+            }
+            case 'dumbbells':
+            case 'barbell':
+            case 'pushup': {
+                const reps = options.getNumber('reps', true);
+                const sets = options.getNumber('sets', true);
+                const totalReps = reps * sets;
+                amount = totalReps * EXERCISE_RATES.per_rep;
+                description = `**+${formatNumber(amount)}** points for ${sets}x${reps} (${totalReps} total reps) of ${subcommand}`;
+                break;
+            }
+        }
+
+        const newAchievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'exercise', amount, reason: `exercise:${subcommand}` });
+        this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: 'exercise' });
+        
+        const userRow = this.db.stmts.getUser.get(guild.id, user.id);
+        if (!userRow) {
+            return interaction.editReply({ content: 'There was an error updating your score. Please try again.', flags: [MessageFlags.Ephemeral] });
+        }
+
+        const { cur, need } = nextRankProgress(userRow.total);
+        const embed = new EmbedBuilder()
+            .setColor(cur.color)
+            .setDescription(`${description} claimed by ${user.toString()}!`)
+            .addFields(
+                { name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true },
+                { name: "Current Rank", value: cur.name, inline: true }
+            )
+            .setThumbnail(user.displayAvatarURL());
+
+        if (need > 0) embed.setFooter({ text: `Only ${formatNumber(need)} points to the next rank!` });
+        
+        const embeds = [embed];
+        
+        if (newAchievements.length > 0) {
+            const achievementEmbed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement Unlocked!').setDescription(newAchievements.map(a => `**${a.name}**: ${a.description}`).join('\n'));
+            embeds.push(achievementEmbed);
+        }
+
+        return interaction.editReply({ embeds });
+    }
+
+    // MODIFIED this function for public visibility and a positive message
     async handleJunk(interaction) {
         const { guild, user, options } = interaction;
         const item = options.getString('item', true);
         const deduction = DEDUCTIONS[item];
+
+        const positiveMessages = [
+            "It's all about balance! Let's make the next meal a healthy one.",
+            "A small setback is just a setup for a great comeback!",
+            "Thanks for being honest! Every healthy choice from here on out counts.",
+            "We all treat ourselves sometimes. Let's get back on track together!",
+            "Acknowledging it is the first step! Let's aim for a healthy snack next time."
+        ];
+        const randomMessage = positiveMessages[Math.floor(Math.random() * positiveMessages.length)];
+
         this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'total', amount: -deduction.points, reason: `junk:${item}` });
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${deduction.emoji} **-${formatNumber(deduction.points)}** points for **${deduction.label}**!`).addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }).setThumbnail(user.displayAvatarURL());
+
+        const embed = new EmbedBuilder()
+            .setColor(0xED4245)
+            .setDescription(`${user.toString()} logged having some ${deduction.emoji} **${deduction.label}**, deducting **${formatNumber(deduction.points)}** points.`)
+            .addFields({ name: "New Total", value: `🏆 ${formatNumber(userRow.total)}` })
+            .setFooter({ text: randomMessage });
+            
         return interaction.editReply({ embeds: [embed] });
     }
 
@@ -345,7 +451,6 @@ class CommandHandler {
             return interaction.editReply({ content: '📊 No data available for this leaderboard yet!' });
         }
 
-        // Add rank number to each row
         rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
 
         const userIds = rows.map(r => r.userId);
@@ -487,7 +592,8 @@ async function main() {
         if (!interaction.isChatInputCommand() || !interaction.guild) return;
         
         try {
-            const ephemeralCommands = ['junk', 'buddy', 'nudge', 'remind', 'admin', 'myscore'];
+            // MODIFIED: Removed 'junk' to make it a public command
+            const ephemeralCommands = ['buddy', 'nudge', 'remind', 'admin', 'myscore'];
             const shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
             await interaction.deferReply({ ephemeral: shouldBeEphemeral });
 
@@ -498,6 +604,7 @@ async function main() {
                 await handler.handleClaim(interaction, commandName, commandName);
             } else {
                 switch (commandName) {
+                    case 'exercise': await handler.handleExercise(interaction); break;
                     case 'walking':
                     case 'jogging':
                     case 'running':
