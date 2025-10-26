@@ -286,6 +286,7 @@ class PointsDatabase {
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
       this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
       const modAmount = Number(amount) || 0;
+     console.log(`[modifyPoints] Guild: ${guildId}, User: ${userId}, Cat: ${category}, Amount: ${amount}, ModAmount: ${modAmount}, Reason: ${reason}`);
       if (modAmount === 0) return [];
 
       // 🔹 Choose correct column or fallback
