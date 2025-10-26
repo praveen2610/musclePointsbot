@@ -160,22 +160,22 @@ class PointsDatabase {
             }
             // **PATCH: Add event_key to points_log for idempotency**
            // **PATCH: Add event_key to points_log for idempotency**
-            try { 
-                // Step 1: Add the column, allowing NULLs (which is what failed before)
-                this.db.exec(`ALTER TABLE points_log ADD COLUMN event_key TEXT;`); 
-            } 
-            catch (e) { 
-                // Ignore "duplicate column" error if it already exists
-                if (!e.message.includes("duplicate column")) {
+ try { 
+ // Step 1: Add the column, allowing NULLs (which is what failed before)
+ this.db.exec(`ALTER TABLE points_log ADD COLUMN event_key TEXT;`); 
+ } 
+ catch (e) { 
+ // Ignore "duplicate column" error if it already exists
+ if (!e.message.includes("duplicate column")) {
  console.error("Migration error adding event_key column:", e); 
-                }
-            }
-            
-            try {
-                // Step 2: Create a UNIQUE index on the column.
-                // This is the safe way to add uniqueness to an existing table.
-                // It's made partial (WHERE NOT NULL) to allow multiple NULL entries.
-  this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;`);
+ }
+ }
+ 
+ try {
+ // Step 2: Create a UNIQUE index on the column.
+ // This is the safe way to add uniqueness to an existing table.
+// It's made partial (WHERE NOT NULL) to allow multiple NULL entries.
+ this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;`);
  } catch(e) {
  console.error("Migration error creating event_key index:", e);
  }
