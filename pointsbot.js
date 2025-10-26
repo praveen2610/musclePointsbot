@@ -1053,7 +1053,8 @@ async function main() {
             if (interaction.commandName === 'db_download') shouldBeEphemeral = true;
 
 
-            await interaction.deferReply({ flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined });
+        // Reply immediately with a placeholder
+await interaction.reply({ content: '🔄 Processing...', flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined });
 
             const { commandName } = interaction;
             const fixedPointCategories = Object.keys(POINTS);
