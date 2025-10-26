@@ -1,4 +1,4 @@
-// pointsbot.js - Final Corrected Version (with full reconciliation)
+// pointsbot.js - Final Version (with /db_download and all fixes)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -57,7 +57,7 @@ const COOLDOWNS = {
     cricket: 12 * 60 * 60 * 1000,
     swimming: 12 * 60 * 60 * 1000,
     yoga: 12 * 60 * 60 * 1000,
-    exercise: 30 * 60 * 1000, 
+    exercise: 30 * 60 * 1000, // Shared for distance/reps/plank
     cooking: 60 * 60 * 1000,
     sweeping: 60 * 60 * 1000,
     gardening: 60 * 60 * 1000,
@@ -71,7 +71,7 @@ const POINTS = {
     badminton: 5,
     cricket: 5,
     swimming: 3,
-    yoga: 2, 
+    yoga: 2, // Yoga points are fixed
     cooking: 2,
     sweeping: 2,
     gardening: 2,
@@ -86,6 +86,7 @@ const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
 const PLANK_RATE_PER_MIN = 1;
 const PLANK_MIN_MIN = 0.75; 
 
+// 25 items
 const DEDUCTIONS = {
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
     fries: { points: 3, emoji: '🍟', label: 'Fries' },
@@ -133,7 +134,6 @@ const ACHIEVEMENTS = [
     { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' },
 ];
 
-// Exercise group categories for aggregation
 const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
 
 /* =========================
@@ -146,15 +146,12 @@ class PointsDatabase {
     prepareStatements() {
         const S = this.stmts = {};
         S.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
-        // This query ONLY updates the 'points' table. It is the "cache".
         S.addPoints = this.db.prepare(`UPDATE points SET total = total + @add, gym = gym + @addGym, badminton = badminton + @addBadminton, cricket = cricket + @addCricket, exercise = exercise + @addExercise, swimming = swimming + @addSwimming, yoga = yoga + @addYoga, updated_at = strftime('%s', 'now') WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
         S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
         S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
         S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`),
-        
-        // Leaderboard queries read from 'points' table for consistency
         S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total > 0 ORDER BY total DESC LIMIT 10`);
         S.lbAllCatFromPoints_gym = this.db.prepare(`SELECT user_id as userId, gym as score FROM points WHERE guild_id=? AND gym > 0 ORDER BY gym DESC LIMIT 10`);
         S.lbAllCatFromPoints_badminton = this.db.prepare(`SELECT user_id as userId, badminton as score FROM points WHERE guild_id=? AND badminton > 0 ORDER BY badminton DESC LIMIT 10`);
@@ -163,11 +160,8 @@ class PointsDatabase {
         S.lbAllCatFromPoints_swimming = this.db.prepare(`SELECT user_id as userId, swimming as score FROM points WHERE guild_id=? AND swimming > 0 ORDER BY swimming DESC LIMIT 10`);
         S.lbAllCatFromPoints_yoga = this.db.prepare(`SELECT user_id as userId, yoga as score FROM points WHERE guild_id=? AND yoga > 0 ORDER BY yoga DESC LIMIT 10`);
         S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total > 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
-        
-        // Periodic queries MUST use points_log
         S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
         S.lbSinceByCat = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 AND category IN (?) GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
-        
         S.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
         S.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`);
         S.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
@@ -181,37 +175,26 @@ class PointsDatabase {
         this.stmts = S;
     }
     
-    // **MODIFIED:** This function now correctly updates all columns in the 'points' table
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) { 
         this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId }); 
         const modAmount = Number(amount) || 0; 
         if (modAmount === 0) return []; 
         
-        // This object matches the @parameters in the S.addPoints query
         const params = {
-            guild_id: guildId,
-            user_id: userId,
-            add: modAmount, // Always update total
-            addGym: 0,
-            addBadminton: 0,
-            addCricket: 0,
-            addExercise: 0,
-            addSwimming: 0,
-            addYoga: 0,
+            guild_id: guildId, user_id: userId, add: modAmount, 
+            addGym: 0, addBadminton: 0, addCricket: 0,
+            addExercise: 0, addSwimming: 0, addYoga: 0,
         };
 
-        // Assign the amount to the correct category parameter
         if (category === 'gym') params.addGym = modAmount;
         else if (category === 'badminton') params.addBadminton = modAmount;
         else if (category === 'cricket') params.addCricket = modAmount;
         else if (EXERCISE_CATEGORIES.includes(category)) params.addExercise = modAmount;
         else if (category === 'swimming') params.addSwimming = modAmount;
         else if (category === 'yoga') params.addYoga = modAmount;
-        else if (category === 'junk') {
-            // For junk, find the highest category to deduct from
-            const userPoints = this.stmts.getUser.get(guildId, userId) || {};
+        else if (modAmount < 0 && category === 'junk') { // Junk deducts from highest category
+            const userPoints = this.stmts.getUser.get(guildId, userId) || {}; 
             const targetCategory = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
-            
             if (targetCategory === 'gym') params.addGym = modAmount;
             else if (targetCategory === 'badminton') params.addBadminton = modAmount;
             else if (targetCategory === 'cricket') params.addCricket = modAmount;
@@ -219,13 +202,10 @@ class PointsDatabase {
             else if (targetCategory === 'swimming') params.addSwimming = modAmount;
             else if (targetCategory === 'yoga') params.addYoga = modAmount;
         }
-        // Chores (cooking, etc.) only affect the 'total' (params.add), so no extra 'else if' is needed.
+        // Chores & Admin Deduct (non-junk) only affect 'total' (params.add)
 
-        // Run the update on the 'points' summary table
         this.stmts.addPoints.run(params); 
-        // Log the original event to the 'points_log'
         this.stmts.logPoints.run(guildId, userId, category, modAmount, Math.floor(Date.now() / 1000), reason, notes); 
-        
         if (modAmount > 0) { 
             this.updateStreak(guildId, userId); 
             return this.checkAchievements(guildId, userId); 
@@ -239,7 +219,7 @@ class PointsDatabase {
     close() { this.db.close(); }
 }
 
-// **MODIFIED:** This function now recalculates ALL columns, not just total.
+// **FIXED:** This function now reconciles ALL columns in the 'points' table
 function reconcileTotals(db) {
   try {
     console.log("🔄 Reconciling all totals from points_log...");
@@ -258,7 +238,7 @@ function reconcileTotals(db) {
         SUM(CASE WHEN category = 'yoga' THEN amount ELSE 0 END) as yoga
       FROM points_log
       GROUP BY guild_id, user_id
-    `).all(...EXERCISE_CATEGORIES);
+    `).all(...EXERCISE_CATEGORIES); // Pass exercise categories as parameters
 
     // 2. Prepare statements to reset and update the points table
     const reset = db.prepare(`
@@ -283,12 +263,13 @@ function reconcileTotals(db) {
 
     // 4. Run the reconciliation in a single transaction
     const tx = db.transaction((guilds, rows) => {
-      // Reset all points for all affected guilds first
       for (const g of guilds) {
         reset.run(g.guild_id);
       }
-      // Upsert the new, correct totals
       for (const row of rows) {
+        // Ensure user exists first
+        db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`).run(row.guild_id, row.user_id);
+        // Upsert the new, correct totals
         upsert.run(row);
       }
     });
@@ -364,6 +345,11 @@ function buildCommands() {
         new SlashCommandBuilder()
             .setName('recalculate')
             .setDescription('🧮 Admin: Recalculate all totals from the log')
+            .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+            
+        new SlashCommandBuilder()
+            .setName('db_download')
+            .setDescription('🔒 Admin: Download a copy of the database file.')
             .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
             
     ].map(c => c.toJSON());
@@ -465,6 +451,7 @@ class CommandHandler {
                  description = `${user.toString()} held a **plank** for **${formatNumber(minutes)} min** → **+${formatNumber(amount)}** pts!`; 
                  notes = `${minutes} min`; 
                  reasonPrefix = 'time'; 
+                 logCategory = 'plank'; // Log plank specifically
                  break; 
              }
             case 'reps': { 
@@ -473,6 +460,7 @@ class CommandHandler {
                 description = `${user.toString()} logged **${count} total reps** → **+${formatNumber(amount)}** pts!`; 
                 notes = `${count} reps`; 
                  reasonPrefix = 'reps'; 
+                 logCategory = 'exercise'; // Log under generic exercise
                 break; 
             }
             case 'dumbbells': case 'barbell': case 'pushup':
@@ -485,6 +473,7 @@ class CommandHandler {
                 description = `${user.toString()} logged ${sets}x${reps} (${totalReps}) **${subcommand}** → **+${formatNumber(amount)}** pts!`; 
                 notes = `${sets}x${reps} reps`; 
                  reasonPrefix = 'reps'; 
+                 logCategory = subcommand; // Log specific exercise name
                 break; 
             }
         }
@@ -630,7 +619,8 @@ class CommandHandler {
             const rsn = options.getString('reason') || `Admin action`; 
             const finalAmt = sub === 'award' ? amt : -amt; 
             
-            // **FIX:** Log with the category the admin specified (e.g., 'gym'), not 'junk'
+            // **FIX:** Log with the category the admin specified (e.g., 'gym')
+            // 'modifyPoints' will correctly update the 'gym' column *and* 'total' column
             const logCat = cat; 
             
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: logCat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
@@ -644,6 +634,24 @@ class CommandHandler {
             this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); 
             const act = sub === 'add_protein' ? 'Added' : 'Deducted'; 
             return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); 
+        }
+    }
+
+    async handleDbDownload(interaction) {
+        const dbPath = CONFIG.dbFile;
+        try {
+            if (!fs.existsSync(dbPath)) {
+                return interaction.editReply({ content: '❌ Database file not found.', flags: [MessageFlags.Ephemeral] });
+            }
+            const attachment = new AttachmentBuilder(dbPath, { name: 'points.db' });
+            await interaction.editReply({
+                content: '✅ Here is a backup of the database file.',
+                files: [attachment],
+                flags: [MessageFlags.Ephemeral] // Keep it private
+            });
+        } catch (err) {
+            console.error("Error sending DB file:", err);
+            await interaction.editReply({ content: '❌ Could not send the database file.', flags: [MessageFlags.Ephemeral] });
         }
     }
 } // End CommandHandler
@@ -689,10 +697,10 @@ async function main() {
             let shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
-            // **FIX:** Make /myscore public if viewing another user
-            if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false; 
+            if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false; // Make viewing others' score public
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false; 
             if (interaction.commandName === 'recalculate') shouldBeEphemeral = true;
+            if (interaction.commandName === 'db_download') shouldBeEphemeral = true; // Make db download ephemeral
 
             await interaction.deferReply({ flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined });
 
@@ -718,6 +726,9 @@ async function main() {
                         await interaction.editReply({ content: '🔄 Recalculating totals...'});
                         reconcileTotals(database.db); 
                         await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` });
+                        break;
+                    case 'db_download':
+                        await handler.handleDbDownload(interaction);
                         break;
                     default:
                          console.warn(`Unhandled: ${commandName}`);
