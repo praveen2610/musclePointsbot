@@ -1,4 +1,4 @@
-// pointsbot.js - Final Version (with User's modifyPoints Patch)
+// pointsbot.js - Final Version (with User's modifyPoints Patch & Clear Data)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -86,6 +86,7 @@ const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
 const PLANK_RATE_PER_MIN = 1;
 const PLANK_MIN_MIN = 0.75; 
 
+// 25 items
 const DEDUCTIONS = {
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
     fries: { points: 3, emoji: '🍟', label: 'Fries' },
@@ -145,10 +146,10 @@ class PointsDatabase {
         this.db = new Database(dbPath); 
         this.db.pragma('journal_mode = WAL'); 
         this.db.pragma('foreign_keys = ON'); 
-
+        
         // **PATCH 1: Auto-migrate chore columns**
         try {
-            console.log("🔄 Migrating database schema...");
+            console.log("🔄 Migrating database schema (if needed)...");
             const cols = CHORE_CATEGORIES;
             for (const c of cols) {
                 try { this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); }
@@ -162,6 +163,7 @@ class PointsDatabase {
     }
 
     initSchema() { 
+        // Schema now includes chore columns
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS points (
             guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
@@ -187,8 +189,6 @@ class PointsDatabase {
     prepareStatements() {
         const S = this.stmts = {};
         S.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
-        // addPoints is no longer used by modifyPoints, but we'll keep it for the (now unused) params object logic
-        S.addPoints = this.db.prepare(`UPDATE points SET total = total + @add, gym = gym + @addGym, badminton = badminton + @addBadminton, cricket = cricket + @addCricket, exercise = exercise + @addExercise, swimming = swimming + @addSwimming, yoga = yoga + @addYoga, updated_at = strftime('%s', 'now') WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
         S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
@@ -201,7 +201,6 @@ class PointsDatabase {
         S.lbAllCatFromPoints_exercise = this.db.prepare(`SELECT user_id as userId, exercise as score FROM points WHERE guild_id=? AND exercise > 0 ORDER BY exercise DESC LIMIT 10`);
         S.lbAllCatFromPoints_swimming = this.db.prepare(`SELECT user_id as userId, swimming as score FROM points WHERE guild_id=? AND swimming > 0 ORDER BY swimming DESC LIMIT 10`);
         S.lbAllCatFromPoints_yoga = this.db.prepare(`SELECT user_id as userId, yoga as score FROM points WHERE guild_id=? AND yoga > 0 ORDER BY yoga DESC LIMIT 10`);
-        // Add chore category LBs
         CHORE_CATEGORIES.forEach(chore => {
             S[`lbAllCatFromPoints_${chore}`] = this.db.prepare(`SELECT user_id as userId, ${chore} as score FROM points WHERE guild_id=? AND ${chore} > 0 ORDER BY ${chore} DESC LIMIT 10`);
         });
@@ -218,6 +217,14 @@ class PointsDatabase {
         S.deleteReminder = this.db.prepare(`DELETE FROM reminders WHERE id = ?`);
         S.addProteinLog = this.db.prepare(`INSERT INTO protein_log (guild_id, user_id, item_name, protein_grams, timestamp) VALUES (?, ?, ?, ?, ?)`);
         S.getDailyProtein = this.db.prepare(`SELECT SUM(protein_grams) AS total FROM protein_log WHERE guild_id = ? AND user_id = ? AND timestamp >= ?`);
+        
+        // **NEW:** Statements for clearing user data
+        S.clearUserPoints = this.db.prepare(`DELETE FROM points WHERE guild_id = ? AND user_id = ?`);
+        S.clearUserLog = this.db.prepare(`DELETE FROM points_log WHERE guild_id = ? AND user_id = ?`);
+        S.clearUserAchievements = this.db.prepare(`DELETE FROM achievements WHERE guild_id = ? AND user_id = ?`);
+        S.clearUserCooldowns = this.db.prepare(`DELETE FROM cooldowns WHERE guild_id = ? AND user_id = ?`);
+        S.clearUserProtein = this.db.prepare(`DELETE FROM protein_log WHERE guild_id = ? AND user_id = ?`);
+        
         this.stmts = S;
     }
     
@@ -227,35 +234,38 @@ class PointsDatabase {
       const modAmount = Number(amount) || 0;
       if (modAmount === 0) return [];
 
-      // 🔹 Choose correct column or fallback
       const safeCols = [
         'gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga',
         'cooking', 'sweeping', 'toiletcleaning', 'gardening', 'carwash', 'dishwashing'
       ];
-      // Map exercise sub-types to the 'exercise' column
+      
       let logCategory = category; // The category for the log
       let targetCol = category; // The column in the 'points' table
       
       if (EXERCISE_CATEGORIES.includes(category)) {
           targetCol = 'exercise';
       } else if (category === 'junk') {
-          // Junk deducts from the highest category, but we just log it as 'junk'
-          // The recalculate query will handle the net negative total
+          // Junk deducts from the highest score category
           const userPoints = this.stmts.getUser.get(guildId, userId) || {}; 
           targetCol = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
       } else if (!safeCols.includes(category)) {
-          // Fallback for unknown categories, maybe admin typo
-          targetCol = 'exercise'; 
+          // This should not happen if admin commands use choices, but as a safeguard:
+          console.warn(`Unknown category ${category} in modifyPoints, applying to 'total' only via log`);
+          // We will still log it, and recalc will fix the total.
+          // We don't have a specific column, so we just log and update total
+          targetCol = null; // Will not update a specific column
       }
 
-      // 🔹 Apply increment directly to that column
-      const stmt = this.db.prepare(`
-        UPDATE points
-        SET ${targetCol} = ${targetCol} + @amt,
-            updated_at = strftime('%s','now')
-        WHERE guild_id = @gid AND user_id = @uid
-      `);
-      stmt.run({ amt: modAmount, gid: guildId, uid: userId });
+      // 🔹 Apply increment directly to that column if it's a safe one
+      if (targetCol && safeCols.includes(targetCol)) {
+          const stmt = this.db.prepare(`
+            UPDATE points
+            SET ${targetCol} = ${targetCol} + @amt,
+                updated_at = strftime('%s','now')
+            WHERE guild_id = @gid AND user_id = @uid
+          `);
+          stmt.run({ amt: modAmount, gid: guildId, uid: userId });
+      }
 
       // 🔹 Recalculate total to ensure exact sum across all columns
       const recalc = this.db.prepare(`
@@ -270,7 +280,7 @@ class PointsDatabase {
       this.stmts.logPoints.run(
         guildId,
         userId,
-        category, 
+        logCategory, // Log the original, specific category
         modAmount,
         Math.floor(Date.now() / 1000),
         reason,
@@ -420,7 +430,11 @@ function buildCommands() {
             .addSubcommand(s=>s.setName('award').setDescription('Award points').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to award')).addNumberOption(o=>o.setName('amount').setRequired(true).setDescription('Pts')).addStringOption(o=>o.setName('category').setRequired(true).setDescription('Category').addChoices(...adminCategoryChoices)).addStringOption(o=>o.setName('reason').setDescription('Reason')))
             .addSubcommand(s=>s.setName('deduct').setDescription('Deduct points').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o=>o.setName('amount').setRequired(true).setDescription('Pts')).addStringOption(o=>o.setName('category').setRequired(true).setDescription('Category').addChoices(...adminCategoryChoices)).addStringOption(o=>o.setName('reason').setDescription('Reason')))
             .addSubcommand(s=>s.setName('add_protein').setDescription('Add protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to add to')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
-            .addSubcommand(s=>s.setName('deduct_protein').setDescription('Deduct protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason'))),
+            .addSubcommand(s=>s.setName('deduct_protein').setDescription('Deduct protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
+            .addSubcommand(s=>s.setName('clear_user_data').setDescription('🔥 Wipe ALL data for a user (IRREVERSIBLE)')
+                .addUserOption(o=>o.setName('user').setRequired(true).setDescription('The user to wipe'))
+                .addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type the word CONFIRM to approve this action'))
+            ),
         
         new SlashCommandBuilder()
             .setName('recalculate')
@@ -512,6 +526,12 @@ class CommandHandler {
             cooldownCategory = 'yoga'; 
             logCategory = 'yoga'; 
             reasonPrefix = 'claim'; 
+        } else if (subcommand === 'plank') {
+            logCategory = 'plank';
+            reasonPrefix = 'time';
+        } else if (REP_RATES[subcommand]) {
+            logCategory = subcommand;
+            reasonPrefix = 'reps';
         }
         
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory });
@@ -530,8 +550,6 @@ class CommandHandler {
                  amount = minutes * PLANK_RATE_PER_MIN; 
                  description = `${user.toString()} held a **plank** for **${formatNumber(minutes)} min** → **+${formatNumber(amount)}** pts!`; 
                  notes = `${minutes} min`; 
-                 reasonPrefix = 'time'; 
-                 logCategory = 'plank'; 
                  break; 
              }
             case 'reps': { 
@@ -539,8 +557,6 @@ class CommandHandler {
                 amount = count * EXERCISE_RATES.per_rep; 
                 description = `${user.toString()} logged **${count} total reps** → **+${formatNumber(amount)}** pts!`; 
                 notes = `${count} reps`; 
-                 reasonPrefix = 'reps'; 
-                 logCategory = 'exercise'; 
                 break; 
             }
             case 'dumbbells': case 'barbell': case 'pushup':
@@ -552,8 +568,6 @@ class CommandHandler {
                 amount = totalReps * rate; 
                 description = `${user.toString()} logged ${sets}x${reps} (${totalReps}) **${subcommand}** → **+${formatNumber(amount)}** pts!`; 
                 notes = `${sets}x${reps} reps`; 
-                 reasonPrefix = 'reps'; 
-                 logCategory = subcommand; 
                 break; 
             }
         }
@@ -690,19 +704,40 @@ class CommandHandler {
         const { guild, user, options } = interaction; const activity = options.getString('activity', true); const hours = options.getNumber('hours', true); const dueAt = Date.now() + hours * 3600000; this.db.stmts.addReminder.run(guild.id, user.id, activity, dueAt); return interaction.editReply({ content: `⏰ Reminder set for **${activity}** in ${hours}h.` }); 
     }
     
-    // **FIXED:** Admin deduct now correctly uses the specified category
     async handleAdmin(interaction) { 
         const { guild, user, options } = interaction; const sub = options.getSubcommand(); const targetUser = options.getUser('user', true);
+
+        // Handle clear_user_data first
+        if (sub === 'clear_user_data') {
+            const confirm = options.getString('confirm', true);
+            if (confirm !== 'CONFIRM') {
+                return interaction.editReply({ content: '❌ Action cancelled. You must type `CONFIRM` to approve.', flags: [MessageFlags.Ephemeral] });
+            }
+            try {
+                this.db.db.transaction(() => {
+                    this.db.stmts.clearUserPoints.run(guild.id, targetUser.id);
+                    this.db.stmts.clearUserLog.run(guild.id, targetUser.id);
+                    this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id);
+                    this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id);
+                    this.db.stmts.clearUserProtein.run(guild.id, targetUser.id);
+                })();
+                return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been deleted.`, flags: [MessageFlags.Ephemeral] });
+            } catch (err) {
+                console.error("Error clearing user data:", err);
+                return interaction.editReply({ content: `❌ An error occurred.`, flags: [MessageFlags.Ephemeral] });
+            }
+        }
+
         if (sub === 'award' || sub === 'deduct') { 
             const amt = options.getNumber('amount', true); 
             const cat = options.getString('category', true); 
             const rsn = options.getString('reason') || `Admin action`; 
             const finalAmt = sub === 'award' ? amt : -amt; 
             
-            // **FIXED:** Log with the category the admin specified (e.g., 'gym'), NOT 'junk'
-            const logCat = cat; 
+            // **THIS IS THE FIX:** We pass the category 'cat' directly.
+            // modifyPoints will handle logging it as 'cat' and updating the correct 'points' table column.
+            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
             
-            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: logCat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
             const act = sub === 'award' ? 'Awarded' : 'Deducted'; 
             return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); 
         }
