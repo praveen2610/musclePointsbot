@@ -638,23 +638,40 @@ class CommandHandler {
     }
 
     async handleDbDownload(interaction) {
-        const dbPath = CONFIG.dbFile;
-        try {
-            if (!fs.existsSync(dbPath)) {
-                return interaction.editReply({ content: '❌ Database file not found.', flags: [MessageFlags.Ephemeral] });
-            }
-            const attachment = new AttachmentBuilder(dbPath, { name: 'points.db' });
-            await interaction.editReply({
-                content: '✅ Here is a backup of the database file.',
-                files: [attachment],
-                flags: [MessageFlags.Ephemeral] // Keep it private
+    try {
+        // Try multiple possible DB locations
+        const possiblePaths = [
+            CONFIG.dbFile,
+            path.join('/data', 'points.db'),
+            path.join(__dirname, 'data', 'points.db')
+        ];
+
+        const existing = possiblePaths.find(p => fs.existsSync(p));
+        if (!existing) {
+            console.error("❌ No DB found at any of:", possiblePaths);
+            return interaction.editReply({
+                content: '❌ Database file not found.',
+                flags: [MessageFlags.Ephemeral]
             });
-        } catch (err) {
-            console.error("Error sending DB file:", err);
-            await interaction.editReply({ content: '❌ Could not send the database file.', flags: [MessageFlags.Ephemeral] });
         }
+
+        const attachment = new AttachmentBuilder(existing, { name: 'points.db' });
+        await interaction.editReply({
+            content: '✅ Here is a backup of the database file.',
+            files: [attachment],
+            flags: [MessageFlags.Ephemeral]
+        });
+
+        console.log(`📤 Sent DB file from: ${existing}`);
+    } catch (err) {
+        console.error("Error sending DB file:", err);
+        await interaction.editReply({
+            content: '❌ Could not send the database file.',
+            flags: [MessageFlags.Ephemeral]
+        });
     }
-} // End CommandHandler
+}
+
 
 /* =========================
     MAIN BOT INITIALIZATION
