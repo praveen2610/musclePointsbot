@@ -1,4 +1,4 @@
-// pointsbot.js - Final Code incorporating SQL schema and UUID keys
+// pointsbot.js - Final Code incorporating SQL schema and UUID keys (Corrected)
 import 'dotenv/config';
 import http from 'node:http'; // Ensure http is imported
 import crypto from 'node:crypto'; // Use crypto for UUID
@@ -139,37 +139,26 @@ class PointsDatabase {
       this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
       const modAmount = Number(amount) || 0;
       if (modAmount === 0) return [];
-
       const safeCols = ALL_POINT_COLUMNS; let logCategory = category, targetCol = category;
       if (EXERCISE_CATEGORIES.includes(category)) { targetCol = 'exercise'; }
       else if (category === 'junk') { const up = this.stmts.getUser.get(guildId, userId) || {}; targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise'; }
       else if (!safeCols.includes(category)) { console.warn(`[modifyPoints Warn] Unknown category '${category}'`); targetCol = null; }
-
       if (targetCol && safeCols.includes(targetCol)) {
           const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
           stmt.run({ amt: modAmount, gid: guildId, uid: userId });
       }
-
       const recalc = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = ? AND user_id = ?`);
       recalc.run(guildId, userId);
-
       const eventKey = crypto.randomUUID();
       try {
           const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
           if (info.changes === 0) { console.log(`[DB] Duplicate event prevented: ${eventKey.substring(0,8)}...`); }
-      } catch (err) {
-            if (err.message.includes('UNIQUE constraint failed: points_log.event_key')) { console.log(`[DB] Duplicate event prevented (caught): ${eventKey.substring(0,8)}...`); }
-            else { console.error(`[DB Error] Failed to log points for ${userId}:`, err); }
-      }
-
-      if (modAmount > 0) {
-        this.updateStreak(guildId, userId);
-        return this.checkAchievements(guildId, userId);
-      }
+      } catch (err) { if (err.message.includes('UNIQUE constraint failed: points_log.event_key')) { console.log(`[DB] Duplicate event prevented (caught): ${eventKey.substring(0,8)}...`); } else { console.error(`[DB Error] Failed to log points for ${userId}:`, err); } }
+      if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); }
       return [];
     }
 
-    updateStreak(guildId, userId) {
+     updateStreak(guildId, userId) {
          try {
              const user = this.stmts.getUser.get(guildId, userId); if (!user) return;
              const today = new Date().toISOString().slice(0,10); if (user.last_activity_date === today) return;
@@ -212,7 +201,7 @@ function reconcileTotals(db) {
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
     const ensureUserStmt = db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`);
 
-    const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all(); // Use points table to find guilds to reset
+    const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all();
      console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
 
     const tx = db.transaction((guildsToReset, rowsFromLog) => {
@@ -249,7 +238,14 @@ function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next 
 const formatCooldown = (ms) => { if (ms <= 0) return 'Ready!'; const s = Math.floor(ms / 1000); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const sec = s % 60; let str = ''; if (h > 0) str += `${h}h `; if (m > 0) str += `${m}m `; if (h === 0 && m === 0 && sec > 0) str += `${sec}s`; else if (h === 0 && m === 0 && sec <= 0) return 'Ready!'; return str.trim() || 'Ready!'; };
 function getPeriodRange(period = 'week') { const n = new Date(); let s = new Date(n); let e = new Date(n); switch(period){ case 'day': s.setHours(0,0,0,0); e.setHours(23,59,59,999); break; case 'month': s = new Date(n.getFullYear(), n.getMonth(), 1); e = new Date(n.getFullYear(), n.getMonth()+1, 0, 23, 59, 59, 999); break; case 'year': s = new Date(n.getFullYear(), 0, 1); e = new Date(n.getFullYear(), 11, 31, 23, 59, 59, 999); break; case 'week': default: const d=n.getDay()||7; s.setDate(n.getDate()-d+1); s.setHours(0,0,0,0); e.setDate(s.getDate()+6); e.setHours(23,59,59,999); break; } return {start: Math.floor(s.getTime()/1000), end: Math.floor(e.getTime()/1000)}; }
 function getPeriodStart(period = 'day') { const n=new Date(); n.setHours(0,0,0,0); return Math.floor(n.getTime()/1000); }
-function createKeepAliveServer() { http.createServer((r,res)=>{res.writeHead(200,{'Content-Type':'text/plain'});res.end('OK');}).listen(process.env.PORT||3000,()=>console.log(`✅ Keep-alive server running on port ${process.env.PORT || 3000}.`));} // Restored definition
+// --- Restored createKeepAliveServer ---
+function createKeepAliveServer() {
+    http.createServer((req, res) => {
+        res.writeHead(200, {'Content-Type': 'text/plain'});
+        res.end('OK');
+    }).listen(process.env.PORT || 3000, () => console.log(`✅ Keep-alive server running on port ${process.env.PORT || 3000}.`));
+}
+// ------------------------------------
 
 
 // --- buildCommands (Added /admin resetpoints) ---
@@ -402,32 +398,119 @@ class CommandHandler {
         const { guild, user, options } = interaction; const sub = options.getSubcommand();
         const targetUser = options.getUser('user');
         if (sub === 'resetpoints') { return this.handleResetPoints(interaction); }
-        if (sub === 'clear_user_data') { /* ... */ } // Logic included below
-        if (sub === 'show_table') { /* ... */ } // Logic included below
-        if (sub === 'download_all_tables') { return this.handleDownloadAllTables(interaction); }
-        if (!targetUser && ['award', 'deduct', 'add_protein', 'deduct_protein'].includes(sub)) { return interaction.editReply({ content: `User required for '${sub}'.`, flags: [MessageFlags.Ephemeral] }); }
-        if (sub === 'award' || sub === 'deduct') { const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt; this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); const act = sub === 'award' ? 'Awarded' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); }
-        if (sub === 'add_protein' || sub === 'deduct_protein') { let g = options.getNumber('grams', true); const rsn = options.getString('reason') || `Admin action`; if (sub === 'deduct_protein') g = -g; this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); const act = sub === 'add_protein' ? 'Added' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); }
-        // --- Refined clear_user_data ---
         if (sub === 'clear_user_data') {
             if (!targetUser) return interaction.editReply({ content: 'User required.', flags: [MessageFlags.Ephemeral] }); const confirm = options.getString('confirm', true); if (confirm !== 'CONFIRM') { return interaction.editReply({ content: '❌ Type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] }); }
             try { this.db.db.transaction(() => { console.log(`[Admin clear] Start TX for ${targetUser.id}`); let tc=0; try { const i=this.db.stmts.clearUserPoints.run(guild.id, targetUser.id); console.log(`Cleared points: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear pts:`,e); throw e;} try { const i=this.db.stmts.clearUserLog.run(guild.id, targetUser.id); console.log(`Cleared log: ${i.changes}`); tc+=i.changes; if(i.changes===0) console.warn(`WARN: log delete 0 changes`); } catch(e){console.error(`Err clear log:`,e); throw e;} try { const i=this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id); console.log(`Cleared achievements: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear ach:`,e); throw e;} try { const i=this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id); console.log(`Cleared cooldowns: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear cd:`,e); throw e;} try { const i=this.db.stmts.clearUserProtein.run(guild.id, targetUser.id); console.log(`Cleared protein: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear prot:`,e); throw e;} try { const i=this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); console.log(`Cleared buddy: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear buddy:`,e); throw e;} console.log(`[Admin clear] TX finished. Rows (approx): ${tc}`); })();
                 try { const cpR = this.db.db.pragma('wal_checkpoint(FULL)'); console.log(`[Admin clear] Checkpoint OK:`, cpR); } catch (cpE) { console.error(`[Admin clear] Checkpoint Err:`, cpE); interaction.followUp({ content: '⚠️ Warn: Checkpoint fail, reads stale.', flags: [MessageFlags.Ephemeral] }).catch(()=>{}); } return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> deleted.` });
             } catch (err) { console.error(`[Admin clear] Error:`, err); return interaction.editReply({ content: `❌ Error clearing data. Check logs.` }); }
         }
-        // --- Refined show_table ---
         if (sub === 'show_table') { const tN=options.getString('table_name',true); const aT=['points','points_log','cooldowns','buddies','achievements','protein_log','reminders']; if (!aT.includes(tN)) { return interaction.editReply({content:'❌ Invalid table.', flags:[MessageFlags.Ephemeral]}); } try { let oB=''; if(['points_log','protein_log','reminders'].includes(tN)) oB='ORDER BY id DESC'; else if (tN==='points') oB='ORDER BY total DESC'; const rows=this.db.db.prepare(`SELECT * FROM ${tN} ${oB} LIMIT 30`).all(); if(rows.length===0) { return interaction.editReply({content:`✅ Table \`${tN}\` empty.`, flags:[MessageFlags.Ephemeral]}); } const data=JSON.stringify(rows,null,2); if(Buffer.byteLength(data,'utf8') > 20*1024*1024) { return interaction.editReply({content:`❌ Data > 20MB.`, flags:[MessageFlags.Ephemeral]}); } const att=new AttachmentBuilder(Buffer.from(data), {name:`${tN}_dump.json`}); return interaction.editReply({content:`✅ Top/last 30 from \`${tN}\`:`, files:[att], flags:[MessageFlags.Ephemeral]}); } catch (err) { console.error(`Err show table ${tN}:`, err); return interaction.editReply({content:`❌ Error fetching. Check logs.`, flags:[MessageFlags.Ephemeral]}); } }
+        if (sub === 'download_all_tables') { return this.handleDownloadAllTables(interaction); }
+        if (!targetUser && ['award', 'deduct', 'add_protein', 'deduct_protein'].includes(sub)) { return interaction.editReply({ content: `User required for '${sub}'.`, flags: [MessageFlags.Ephemeral] }); }
+        if (sub === 'award' || sub === 'deduct') { const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt; this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); const act = sub === 'award' ? 'Awarded' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); }
+        if (sub === 'add_protein' || sub === 'deduct_protein') { let g = options.getNumber('grams', true); const rsn = options.getString('reason') || `Admin action`; if (sub === 'deduct_protein') g = -g; this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); const act = sub === 'add_protein' ? 'Added' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); }
     }
 
-    async handleResetPoints(interaction) { /* ... (logic unchanged) ... */ }
-    async handleDownloadAllTables(interaction) { /* ... (logic unchanged) ... */ }
-    async handleDbDownload(interaction) { /* ... (logic unchanged) ... */ }
-}
+    async handleResetPoints(interaction) {
+        const { guild } = interaction;
+        const confirmName = interaction.options.getString('confirm', true);
+        if (confirmName !== guild.name) { return interaction.editReply({ content: `❌ Reset cancelled. Type server name \`${guild.name}\` to confirm.`, flags: [MessageFlags.Ephemeral] }); }
+        try { console.log(`[Admin resetpoints] Starting FULL RESET for guild ${guild.id} (${guild.name}) by ${interaction.user.tag}`);
+            this.db.db.transaction((guildId) => {
+                const tables = ['Points', 'Log', 'Cooldowns', 'Achievements', 'Buddies', 'Protein', 'Reminders']; let tc = 0;
+                tables.forEach(t => { try { const s = this.db.stmts[`resetGuild${t}`]; if (s) { const i = s.run(guildId); console.log(`Reset ${t}: ${i.changes}`); tc += i.changes; } else { console.warn(`Missing reset statement for ${t}`);} } catch (e) { console.error(`Error resetting ${t}:`, e); throw e; } });
+                 console.log(`[Admin resetpoints] TX finished. Rows (approx): ${tc}`);
+            })(guild.id);
+            try { const cpR = this.db.db.pragma('wal_checkpoint(FULL)'); console.log(`[Admin resetpoints] Checkpoint OK:`, cpR); }
+            catch (cpE) { console.error(`[Admin resetpoints] Checkpoint Err:`, cpE); interaction.followUp({ content: '⚠️ Warn: Reset OK, checkpoint failed.', flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
+            return interaction.editReply({ content: `✅ All data reset for **${guild.name}**.`, flags: [MessageFlags.Ephemeral] });
+        } catch (err) { console.error(`[Admin resetpoints] Error for guild ${guild.id}:`, err); return interaction.editReply({ content: `❌ Error during reset. Check logs.`, flags: [MessageFlags.Ephemeral] }); }
+    }
+
+    async handleDownloadAllTables(interaction) {
+        console.log(`[Admin download_all_tables] Request by ${interaction.user.tag}`); const attachments = []; let fileCount = 0; const MAX_ATTACHMENTS = 10;
+        try { const tables = this.db.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';`).all(); console.log(`Found tables: ${tables.map(t=>t.name).join(', ')}`);
+            for (const table of tables) { if (fileCount >= MAX_ATTACHMENTS) { console.warn(`Attach limit ${MAX_ATTACHMENTS}. Skipping.`); await interaction.followUp({ content: `⚠️ Attach limit ${MAX_ATTACHMENTS}. Skipped some.`, flags: MessageFlags.Ephemeral }).catch(()=>{}); break; }
+                const tN = table.name; console.log(`Processing: ${tN}`); try { const rows = this.db.db.prepare(`SELECT * FROM ${tN}`).all(); if (rows.length === 0) { console.log(`Table ${tN} empty. Skip.`); continue; } const data = JSON.stringify(rows, null, 2); const buffer = Buffer.from(data); if (buffer.byteLength > 20*1024*1024) { console.warn(`Table ${tN} > 20MB. Skip.`); await interaction.followUp({ content: `⚠️ \`${tN}\` > 20MB. Skipped.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); continue; } attachments.push(new AttachmentBuilder(buffer, { name: `${tN}.json` })); fileCount++; console.log(`Prepared ${tN} (${rows.length} rows).`); }
+                catch (tableErr) { console.error(`Error fetch ${tN}:`, tableErr); await interaction.followUp({ content: `❌ Error fetch \`${tN}\`. Check logs.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
+            } // End for
+            if (attachments.length > 0) { await interaction.editReply({ content: `✅ Data tables (up to ${MAX_ATTACHMENTS}):`, files: attachments }); console.log(`Sent ${attachments.length} dumps.`); }
+            else { await interaction.editReply({ content: '✅ No data/all skipped.' }); console.log(`No attachments sent.`); }
+        } catch (err) { console.error('❌ [Admin download_all] Error:', err); await interaction.editReply({ content: '❌ Unexpected error preparing downloads.' }).catch(()=>{}); }
+    }
+
+    async handleDbDownload(interaction) {
+        const dbPath = CONFIG.dbFile; try { if (!fs.existsSync(dbPath)) { return interaction.editReply({ content: '❌ DB file not found.' }); } const att = new AttachmentBuilder(dbPath, { name: 'points.db' }); await interaction.editReply({ content: '✅ DB Backup:', files: [att] }); } catch (err) { console.error("Error sending DB:", err); await interaction.editReply({ content: '❌ Could not send DB.' }).catch(()=>{}); }
+    }
+} // End CommandHandler
 
 
 /* =========================
     MAIN BOT INITIALIZATION
 ========================= */
-async function main() { /* ... (logic unchanged) ... */ }
+async function main() {
+    console.log("[Startup] Starting main function...");
+    createKeepAliveServer(); // RESTORED CALL
+    if (!CONFIG.token || !CONFIG.appId) { console.error('[Startup Error] Missing DISCORD_TOKEN or APPLICATION_ID env vars!'); process.exit(1); }
+    let database; try { console.log("[Startup] Initializing database..."); database = new PointsDatabase(CONFIG.dbFile); } catch (e) { console.error("❌ [Startup FATAL] Failed to initialize Database class:", e); process.exit(1); }
+    console.log("[Startup] Starting initial data reconciliation..."); reconcileTotals(database.db); console.log("[Startup] Finished reconcileTotals function call.");
+    try { console.log("[Startup] Attempting WAL checkpoint..."); const checkpointResult = database.db.pragma('wal_checkpoint(FULL)'); console.log("[Startup] WAL Checkpoint Result:", checkpointResult); if (checkpointResult?.[0]?.checkpointed > -1) { console.log(`✅ [Startup] Database checkpoint successful (${checkpointResult[0].checkpointed} pages).`); } else { console.warn("⚠️ [Startup] DB checkpoint command executed but result unexpected:", checkpointResult); } } catch (e) { console.error("❌ [Startup Error] Database checkpoint failed:", e); }
+    console.log("[Startup] Initializing CommandHandler..."); const handler = new CommandHandler(database);
+    console.log("[Startup] Initializing REST client and registering commands..."); const rest = new REST({ version: '10' }).setToken(CONFIG.token);
+    try { const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId); await rest.put(route, { body: buildCommands() }); console.log('✅ [Startup] Registered application commands.'); }
+    catch (err) { console.error('❌ [Startup Error] Command registration failed:', err); if (err.rawError) console.error('Validation Errors:', JSON.stringify(err.rawError, null, 2)); else if (err.errors) console.error('Validation Errors:', JSON.stringify(err.errors, null, 2)); process.exit(1); }
+    console.log("[Startup] Initializing Discord Client..."); const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+    client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
+
+    client.on('interactionCreate', async (interaction) => {
+        const receivedTime = Date.now();
+        if (!isBotReady) { try { if (!interaction.replied && !interaction.deferred) { await interaction.reply({ content: "⏳ Bot starting...", flags: MessageFlags.Ephemeral }); } } catch (e) { console.error("Could not send 'not ready' reply:", e); } return; }
+        if (!interaction.isChatInputCommand() || !interaction.guild) return;
+
+        let initialReplySuccessful = false;
+        try {
+            let shouldBeEphemeral = ['buddy', 'nudge', 'remind', 'admin', 'myscore', 'recalculate', 'db_download'].includes(interaction.commandName);
+            if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
+            if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
+            if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
+            if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
+            if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false;
+
+            await interaction.reply({ content: '🔄 Processing...', flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined }); initialReplySuccessful = true;
+            const { commandName } = interaction; const fixedPointCategories = Object.keys(POINTS);
+
+            if (fixedPointCategories.includes(commandName)) { await handler.handleClaim(interaction, commandName); }
+            else if (commandName === 'exercise') { await handler.handleExercise(interaction); }
+            else if (['walking', 'jogging', 'running'].includes(commandName)) { await handler.handleDistance(interaction, commandName); }
+            else if (commandName === 'protein') { await handler.handleProtein(interaction); }
+            else {
+                switch (commandName) {
+                    case 'junk': await handler.handleJunk(interaction); break;
+                    case 'myscore': await handler.handleMyScore(interaction); break;
+                    case 'leaderboard': await handler.handleLeaderboard(interaction); break;
+                    case 'leaderboard_period': await handler.handleLeaderboardPeriod(interaction); break;
+                    case 'buddy': await handler.handleBuddy(interaction); break;
+                    case 'nudge': await handler.handleNudge(interaction); break;
+                    case 'remind': await handler.handleRemind(interaction); break;
+                    case 'admin': await handler.handleAdmin(interaction); break;
+                    case 'recalculate': console.log("[Cmd] /recalculate"); reconcileTotals(database.db); database.db.pragma('wal_checkpoint(FULL)'); console.log("[Cmd] Recalc complete."); await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` }); break;
+                    case 'db_download': console.log("[Cmd] /db_download"); await handler.handleDbDownload(interaction); break;
+                    default: console.warn(`[Cmd Warn] Unhandled: ${commandName}`); await interaction.editReply({ content: "Unknown cmd."});
+                }
+            }
+        } catch (err) {
+            const errorTime = Date.now(); console.error(`❌ [Interaction Error] Cmd /${interaction.commandName} by ${interaction.user.tag} at ${errorTime} (Total: ${errorTime - receivedTime}ms):`, err);
+            if (!initialReplySuccessful && err.code === 10062) { console.error("❌ CRITICAL: Initial ack failed (10062). Cannot proceed."); return; }
+            const errorReply = { content: `❌ Error processing command. Check logs.`}; const errorReplyEphemeral = { ...errorReply, flags: [MessageFlags.Ephemeral]};
+            try { if (initialReplySuccessful) { await interaction.editReply(errorReply).catch(editErr => { console.error("❌ Failed editReply w/ error:", editErr); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after edit fail:", followUpErr); }); }); } else { console.warn("[Warn] Initial reply failed (not 10062). Attempting followup."); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after non-10062 initial fail:", followUpErr); }); } }
+            catch (e) { console.error("❌ CRITICAL: Error sending error reply:", e); }
+        }
+    }); // End interactionCreate
+
+    const shutdown = (signal) => { console.log(`[Shutdown] Received ${signal}. Shutting down...`); isBotReady = false; console.log('[Shutdown] Destroying Discord client...'); client?.destroy(); setTimeout(() => { console.log('[Shutdown] Closing database...'); database?.close(); console.log("[Shutdown] Exiting."); process.exit(0); }, 1500); };
+    process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
+
+    console.log("[Startup] Attempting client login..."); await client.login(CONFIG.token); console.log("[Startup] client.login() resolved. Waiting for 'clientReady'...");
+}
 
 main().catch(err => { console.error('❌ [FATAL ERROR] Uncaught error in main function:', err); process.exit(1); });
