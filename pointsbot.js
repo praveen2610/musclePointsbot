@@ -1,7 +1,7 @@
-// pointsbot.js - Final Code incorporating SQL schema and UUID keys (Corrected)
+// pointsbot.js - Reverted to Partial Index for event_key
 import 'dotenv/config';
-import http from 'node:http'; // Ensure http is imported
-import crypto from 'node:crypto'; // Use crypto for UUID
+import http from 'node:http';
+import crypto from 'node:crypto';
 import {
     Client, GatewayIntentBits, REST, Routes,
     SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits, MessageFlags
@@ -58,17 +58,18 @@ class PointsDatabase {
             console.log("✅ [DB] Database connection opened successfully.");
         } catch (dbErr) { console.error("❌ [DB FATAL] Could not open database file:", dbErr); process.exit(1); }
 
-        this.initSchema();
-        this.performMigrations();
+        this.initSchema(); // Ensures tables/constraints/indexes exist
+        this.performMigrations(); // Adds missing columns if needed
         this.prepareStatements();
         console.log("✅ [DB] Database class initialized.");
     }
 
+    // Ensures base tables and crucial constraints/indexes exist
     initSchema() {
         try {
             this.db.exec(`
               CREATE TABLE IF NOT EXISTS points ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0, exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0, cooking REAL NOT NULL DEFAULT 0, sweeping REAL NOT NULL DEFAULT 0, toiletcleaning REAL NOT NULL DEFAULT 0, gardening REAL NOT NULL DEFAULT 0, carwash REAL NOT NULL DEFAULT 0, dishwashing REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
-              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT UNIQUE );
+              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT /* Removed UNIQUE here */ );
               CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
               CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) );
               CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
@@ -78,11 +79,14 @@ class PointsDatabase {
               CREATE INDEX IF NOT EXISTS idx_points_log_category ON points_log (category);
               CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
               CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
+              -- Add the UNIQUE INDEX definition back
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;
             `);
-            console.log("[DB] initSchema executed (ensured tables and constraints exist).");
+            console.log("[DB] initSchema executed (ensured tables and indexes exist).");
         } catch (schemaErr) { console.error("❌ [DB FATAL] Error initializing schema:", schemaErr); process.exit(1); }
     }
 
+    // Only handles adding NEW columns or non-unique indexes
     performMigrations() {
          try {
             console.log("🔄 [DB Migration] Checking for necessary schema additions...");
@@ -97,7 +101,10 @@ class PointsDatabase {
     prepareStatements() {
         try {
             const S = this.stmts = {};
-            S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) DO NOTHING`);
+            // Correct the ON CONFLICT clause to match the INDEX
+            S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) WHERE event_key IS NOT NULL DO NOTHING`);
+
+            // Other statements...
             S.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
             S.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
             S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
@@ -152,8 +159,9 @@ class PointsDatabase {
       const eventKey = crypto.randomUUID();
       try {
           const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
-          if (info.changes === 0) { console.log(`[DB] Duplicate event prevented: ${eventKey.substring(0,8)}...`); }
-      } catch (err) { if (err.message.includes('UNIQUE constraint failed: points_log.event_key')) { console.log(`[DB] Duplicate event prevented (caught): ${eventKey.substring(0,8)}...`); } else { console.error(`[DB Error] Failed to log points for ${userId}:`, err); } }
+          // Only log duplicates if changes === 0 and error wasn't thrown (unlikely with DO NOTHING)
+          if (info.changes === 0 && this.db.db.changes() === 0) { console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); }
+      } catch (err) { console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); } // Log errors but don't crash
       if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); }
       return [];
     }
@@ -193,14 +201,11 @@ function reconcileTotals(db) {
          if (col === 'exercise') { return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`; }
          else { return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`; }
      }).join(',\n        ');
-
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categorySums} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
-
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
     const ensureUserStmt = db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`);
-
     const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all();
      console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
 
@@ -209,7 +214,6 @@ function reconcileTotals(db) {
       let resetCount = 0;
       for (const g of guildsToReset) { resetStmt.run(g.guild_id); resetCount++; }
       console.log(`[Reconcile] Reset points table for ${resetCount} guilds.`);
-
       let upsertCount = 0;
       for (const row of rowsFromLog) {
         ensureUserStmt.run(row.guild_id, row.user_id);
@@ -238,14 +242,12 @@ function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next 
 const formatCooldown = (ms) => { if (ms <= 0) return 'Ready!'; const s = Math.floor(ms / 1000); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const sec = s % 60; let str = ''; if (h > 0) str += `${h}h `; if (m > 0) str += `${m}m `; if (h === 0 && m === 0 && sec > 0) str += `${sec}s`; else if (h === 0 && m === 0 && sec <= 0) return 'Ready!'; return str.trim() || 'Ready!'; };
 function getPeriodRange(period = 'week') { const n = new Date(); let s = new Date(n); let e = new Date(n); switch(period){ case 'day': s.setHours(0,0,0,0); e.setHours(23,59,59,999); break; case 'month': s = new Date(n.getFullYear(), n.getMonth(), 1); e = new Date(n.getFullYear(), n.getMonth()+1, 0, 23, 59, 59, 999); break; case 'year': s = new Date(n.getFullYear(), 0, 1); e = new Date(n.getFullYear(), 11, 31, 23, 59, 59, 999); break; case 'week': default: const d=n.getDay()||7; s.setDate(n.getDate()-d+1); s.setHours(0,0,0,0); e.setDate(s.getDate()+6); e.setHours(23,59,59,999); break; } return {start: Math.floor(s.getTime()/1000), end: Math.floor(e.getTime()/1000)}; }
 function getPeriodStart(period = 'day') { const n=new Date(); n.setHours(0,0,0,0); return Math.floor(n.getTime()/1000); }
-// --- Restored createKeepAliveServer ---
-function createKeepAliveServer() {
+function createKeepAliveServer() { // Restored definition
     http.createServer((req, res) => {
         res.writeHead(200, {'Content-Type': 'text/plain'});
         res.end('OK');
     }).listen(process.env.PORT || 3000, () => console.log(`✅ Keep-alive server running on port ${process.env.PORT || 3000}.`));
 }
-// ------------------------------------
 
 
 // --- buildCommands (Added /admin resetpoints) ---
@@ -296,8 +298,7 @@ function buildCommands() {
     ].map(c => c.toJSON());
 }
 
-
-// --- CommandHandler (Includes handleResetPoints) ---
+// --- CommandHandler (Includes handleResetPoints and all others) ---
 class CommandHandler {
     constructor(db) { this.db = db; }
 
@@ -421,9 +422,9 @@ class CommandHandler {
                 tables.forEach(t => { try { const s = this.db.stmts[`resetGuild${t}`]; if (s) { const i = s.run(guildId); console.log(`Reset ${t}: ${i.changes}`); tc += i.changes; } else { console.warn(`Missing reset statement for ${t}`);} } catch (e) { console.error(`Error resetting ${t}:`, e); throw e; } });
                  console.log(`[Admin resetpoints] TX finished. Rows (approx): ${tc}`);
             })(guild.id);
-            try { const cpR = this.db.db.pragma('wal_checkpoint(FULL)'); console.log(`[Admin resetpoints] Checkpoint OK:`, cpR); }
-            catch (cpE) { console.error(`[Admin resetpoints] Checkpoint Err:`, cpE); interaction.followUp({ content: '⚠️ Warn: Reset OK, checkpoint failed.', flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
-            return interaction.editReply({ content: `✅ All data reset for **${guild.name}**.`, flags: [MessageFlags.Ephemeral] });
+            try { const cpR = this.db.db.pragma('wal_checkpoint(FULL)'); console.log(`[Admin resetpoints] WAL checkpoint OK. Result:`, cpR); }
+            catch (cpE) { console.error(`[Admin resetpoints] WAL checkpoint Error:`, cpE); interaction.followUp({ content: '⚠️ Warn: Reset OK, checkpoint failed. Reads might be stale.', flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
+            return interaction.editReply({ content: `✅ All points, logs, cooldowns, achievements, etc. reset for **${guild.name}**.`, flags: [MessageFlags.Ephemeral] });
         } catch (err) { console.error(`[Admin resetpoints] Error for guild ${guild.id}:`, err); return interaction.editReply({ content: `❌ Error during reset. Check logs.`, flags: [MessageFlags.Ephemeral] }); }
     }
 
@@ -433,9 +434,9 @@ class CommandHandler {
             for (const table of tables) { if (fileCount >= MAX_ATTACHMENTS) { console.warn(`Attach limit ${MAX_ATTACHMENTS}. Skipping.`); await interaction.followUp({ content: `⚠️ Attach limit ${MAX_ATTACHMENTS}. Skipped some.`, flags: MessageFlags.Ephemeral }).catch(()=>{}); break; }
                 const tN = table.name; console.log(`Processing: ${tN}`); try { const rows = this.db.db.prepare(`SELECT * FROM ${tN}`).all(); if (rows.length === 0) { console.log(`Table ${tN} empty. Skip.`); continue; } const data = JSON.stringify(rows, null, 2); const buffer = Buffer.from(data); if (buffer.byteLength > 20*1024*1024) { console.warn(`Table ${tN} > 20MB. Skip.`); await interaction.followUp({ content: `⚠️ \`${tN}\` > 20MB. Skipped.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); continue; } attachments.push(new AttachmentBuilder(buffer, { name: `${tN}.json` })); fileCount++; console.log(`Prepared ${tN} (${rows.length} rows).`); }
                 catch (tableErr) { console.error(`Error fetch ${tN}:`, tableErr); await interaction.followUp({ content: `❌ Error fetch \`${tN}\`. Check logs.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
-            } // End for
-            if (attachments.length > 0) { await interaction.editReply({ content: `✅ Data tables (up to ${MAX_ATTACHMENTS}):`, files: attachments }); console.log(`Sent ${attachments.length} dumps.`); }
-            else { await interaction.editReply({ content: '✅ No data/all skipped.' }); console.log(`No attachments sent.`); }
+            }
+            if (attachments.length > 0) { await interaction.editReply({ content: `✅ Data tables (up to ${MAX_ATTACHMENTS}):`, files: attachments }); console.log(`Sent ${attachments.length} table dumps.`); }
+            else { await interaction.editReply({ content: '✅ No data found/all skipped.' }); console.log(`No attachments sent.`); }
         } catch (err) { console.error('❌ [Admin download_all] Error:', err); await interaction.editReply({ content: '❌ Unexpected error preparing downloads.' }).catch(()=>{}); }
     }
 
@@ -462,6 +463,7 @@ async function main() {
     console.log("[Startup] Initializing Discord Client..."); const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
     client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
 
+    // --- InteractionCreate Handler ---
     client.on('interactionCreate', async (interaction) => {
         const receivedTime = Date.now();
         if (!isBotReady) { try { if (!interaction.replied && !interaction.deferred) { await interaction.reply({ content: "⏳ Bot starting...", flags: MessageFlags.Ephemeral }); } } catch (e) { console.error("Could not send 'not ready' reply:", e); } return; }
@@ -492,7 +494,7 @@ async function main() {
                     case 'buddy': await handler.handleBuddy(interaction); break;
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
-                    case 'admin': await handler.handleAdmin(interaction); break;
+                    case 'admin': await handler.handleAdmin(interaction); break; // Routes subcommands internally
                     case 'recalculate': console.log("[Cmd] /recalculate"); reconcileTotals(database.db); database.db.pragma('wal_checkpoint(FULL)'); console.log("[Cmd] Recalc complete."); await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` }); break;
                     case 'db_download': console.log("[Cmd] /db_download"); await handler.handleDbDownload(interaction); break;
                     default: console.warn(`[Cmd Warn] Unhandled: ${commandName}`); await interaction.editReply({ content: "Unknown cmd."});
