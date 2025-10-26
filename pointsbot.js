@@ -827,6 +827,12 @@ class CommandHandler {
                     this.db.stmts.clearUserProtein.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id);
                 })();
+                try {
+                    this.db.db.pragma('wal_checkpoint(FULL)');
+                    console.log(`[Admin clear_user_data] WAL checkpoint successful after deleting data for ${targetUser.id}`);
+                } catch (cpErr) {
+                    console.error(`[Admin clear_user_data] Error during WAL checkpoint after deletion for ${targetUser.id}:`, cpErr);
+                }
                 return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been permanently deleted.`, flags: [MessageFlags.Ephemeral] });
             } catch (err) {
                 console.error("Error clearing user data:", err);
