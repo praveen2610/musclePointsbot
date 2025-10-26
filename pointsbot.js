@@ -810,33 +810,50 @@ class CommandHandler {
         const { guild, user, options } = interaction; const sub = options.getSubcommand();
         const targetUser = options.getUser('user'); // 'user' is not required for 'show_table'
 
-        if (sub === 'clear_user_data') {
+if (sub === 'clear_user_data') {
             if (!targetUser) return interaction.editReply({ content: 'You must specify a user to clear.', flags: [MessageFlags.Ephemeral] });
             const confirm = options.getString('confirm', true);
             if (confirm !== 'CONFIRM') {
                 return interaction.editReply({ content: '❌ Action cancelled. You must type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] });
             }
             try {
-                // This transaction correctly clears ALL data for the user from
-                // the "current" table (points) and "historic" table (points_log)
+                // Transaction to delete data from ALL relevant tables
                 this.db.db.transaction(() => {
-                    this.db.stmts.clearUserPoints.run(guild.id, targetUser.id);
-                    this.db.stmts.clearUserLog.run(guild.id, targetUser.id);
-                    this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id);
-                    this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id);
-                    this.db.stmts.clearUserProtein.run(guild.id, targetUser.id);
-                    this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id);
-                })();
+                    console.log(`[Admin clear_user_data] Starting transaction for ${targetUser.id}`);
+                    const pointsInfo = this.db.stmts.clearUserPoints.run(guild.id, targetUser.id);
+                    console.log(`[Admin clear_user_data] Cleared points: ${pointsInfo.changes} rows`);
+                    const logInfo = this.db.stmts.clearUserLog.run(guild.id, targetUser.id);
+                    console.log(`[Admin clear_user_data] Cleared points_log: ${logInfo.changes} rows`); // Check if this logs > 0
+                    const achInfo = this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id);
+                     console.log(`[Admin clear_user_data] Cleared achievements: ${achInfo.changes} rows`);
+                    const cdInfo = this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id);
+                     console.log(`[Admin clear_user_data] Cleared cooldowns: ${cdInfo.changes} rows`);
+                    const protInfo = this.db.stmts.clearUserProtein.run(guild.id, targetUser.id);
+                     console.log(`[Admin clear_user_data] Cleared protein_log: ${protInfo.changes} rows`);
+                    const buddyInfo = this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id);
+                     console.log(`[Admin clear_user_data] Cleared buddies: ${buddyInfo.changes} rows`);
+                    console.log(`[Admin clear_user_data] Transaction finished for ${targetUser.id}`);
+                })(); // End of the transaction
+
+                // <<<===========================================>>>
+                // <<< CRITICAL: Force checkpoint AFTER deleting >>>
+                // <<<===========================================>>>
                 try {
                     this.db.db.pragma('wal_checkpoint(FULL)');
                     console.log(`[Admin clear_user_data] WAL checkpoint successful after deleting data for ${targetUser.id}`);
                 } catch (cpErr) {
                     console.error(`[Admin clear_user_data] Error during WAL checkpoint after deletion for ${targetUser.id}:`, cpErr);
+                    // Consider warning the user if checkpoint fails, as reads might be stale
+                    interaction.followUp({ content: '⚠️ Warning: Data cleared, but database checkpoint failed. Leaderboard/myscore might be stale for a moment.', flags: [MessageFlags.Ephemeral] });
                 }
+                // <<<===========================================>>>
+
+                // Success message is AFTER the checkpoint
                 return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been permanently deleted.`, flags: [MessageFlags.Ephemeral] });
-            } catch (err) {
-                console.error("Error clearing user data:", err);
-                return interaction.editReply({ content: `❌ An error occurred while trying to clear data.`, flags: [MessageFlags.Ephemeral] });
+
+            } catch (err) { // Catch errors during the transaction or checkpoint attempt
+                console.error(`[Admin clear_user_data] Error clearing data for ${targetUser.id}:`, err);
+                return interaction.editReply({ content: `❌ An error occurred while trying to clear data. Check logs.`, flags: [MessageFlags.Ephemeral] });
             }
         }
 
