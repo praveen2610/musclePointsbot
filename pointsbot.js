@@ -1,4 +1,4 @@
-// pointsbot.js - Final Version (with Reconciliation Patch)
+// pointsbot.js - Final Version (with /myscore @user and PID Diagnostic)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -11,6 +11,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// ADDED: Process ID for diagnostics
+const BOT_PROCESS_ID = process.pid; 
 
 /* =========================
     CONFIG & CONSTANTS
@@ -56,7 +58,7 @@ const COOLDOWNS = {
     cricket: 12 * 60 * 60 * 1000,
     swimming: 12 * 60 * 60 * 1000,
     yoga: 12 * 60 * 60 * 1000,
-    exercise: 30 * 60 * 1000, // Shared for distance/reps/plank
+    exercise: 30 * 60 * 1000,
     cooking: 60 * 60 * 1000,
     sweeping: 60 * 60 * 1000,
     gardening: 60 * 60 * 1000,
@@ -70,7 +72,7 @@ const POINTS = {
     badminton: 5,
     cricket: 5,
     swimming: 3,
-    yoga: 2, // Yoga points are fixed
+    yoga: 2,
     cooking: 2,
     sweeping: 2,
     gardening: 2,
@@ -79,16 +81,13 @@ const POINTS = {
     dishwashing: 2,
 };
 
-const EXERCISE_RATES = {
-    per_rep: 0.002,
-};
+const EXERCISE_RATES = { per_rep: 0.002 };
 const DISTANCE_RATES = { walking: 0.5, jogging: 0.6, running: 0.7 };
 const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
 const PLANK_RATE_PER_MIN = 1;
-const PLANK_MIN_MIN = 0.75; // 45s
+const PLANK_MIN_MIN = 0.75;
 
 const DEDUCTIONS = {
-    // 25 items total
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
     fries: { points: 3, emoji: '🍟', label: 'Fries' },
     soda: { points: 2, emoji: '🥤', label: 'Soda / Soft Drink' },
@@ -139,38 +138,8 @@ const ACHIEVEMENTS = [
     DATABASE CLASS
 ========================= */
 class PointsDatabase {
-    constructor(dbPath) {
-        try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (err) { if (err.code !== 'EEXIST') console.error('DB dir error:', err); }
-        this.db = new Database(dbPath);
-        this.db.pragma('journal_mode = WAL');
-        this.db.pragma('foreign_keys = ON');
-        this.initSchema();
-        this.prepareStatements();
-    }
-
-    initSchema() {
-        this.db.exec(`
-          CREATE TABLE IF NOT EXISTS points (
-            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
-            gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0,
-            exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0,
-            current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT,
-            created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-            PRIMARY KEY (guild_id, user_id)
-          );
-          CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
-          CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT );
-          CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
-          CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) );
-          CREATE TABLE IF NOT EXISTS reminders ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER );
-          CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
-          CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
-          CREATE TABLE IF NOT EXISTS protein_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
-            item_name TEXT NOT NULL, protein_grams REAL NOT NULL, timestamp INTEGER NOT NULL
-          );
-        `);
-    }
+    constructor(dbPath) { try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (err) { if (err.code !== 'EEXIST') console.error('DB dir error:', err); } this.db = new Database(dbPath); this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.initSchema(); this.prepareStatements(); }
+    initSchema() { this.db.exec(`CREATE TABLE IF NOT EXISTS points (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0, exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id)); CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) ); CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT ); CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) ); CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) ); CREATE TABLE IF NOT EXISTS reminders ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER ); CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts); CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC); CREATE TABLE IF NOT EXISTS protein_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, item_name TEXT NOT NULL, protein_grams REAL NOT NULL, timestamp INTEGER NOT NULL );`); }
     
     prepareStatements() {
         const S = this.stmts = {};
@@ -229,7 +198,7 @@ function reconcileTotals(db) {
       VALUES (@guild_id, @user_id, @total)
       ON CONFLICT(guild_id, user_id)
       DO UPDATE SET total = excluded.total
-    `); // Use excluded.total to ensure it updates
+    `);
 
     // Run this in a transaction for speed and safety
     const tx = db.transaction(rows => {
@@ -293,7 +262,10 @@ function buildCommands() {
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging (${DISTANCE_RATES.jogging} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('running').setDescription(`💨 Log running (${DISTANCE_RATES.running} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         
-        new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank'),
+        // MODIFIED: Added user option
+        new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank')
+            .addUserOption(o => o.setName('user').setDescription('The user to view (defaults to yourself)')),
+
         new SlashCommandBuilder().setName('leaderboard').setDescription('📊 Show All-Time leaderboard').addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
         new SlashCommandBuilder().setName('leaderboard_period').setDescription('📅 Show periodic leaderboard').addStringOption(o=>o.setName('period').setRequired(true).setDescription('Period').addChoices({name:'Today',value:'day'},{name:'This Week',value:'week'},{name:'Month',value:'month'},{name:'Year',value:'year'})).addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
         new SlashCommandBuilder().setName('junk').setDescription('🍕 Log junk food').addStringOption(o=>o.setName('item').setRequired(true).setDescription('Item').addChoices(...Object.entries(DEDUCTIONS).map(([k,{emoji,label}])=>({name:`${emoji} ${label}`,value:k})))),
@@ -338,13 +310,15 @@ class CommandHandler {
         if (!userRow) return interaction.editReply({ content: 'Error updating score.', flags: [MessageFlags.Ephemeral] });
         
         const { cur, need } = nextRankProgress(userRow.total);
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} claimed **+${formatNumber(amount)}** pts for **${category}**!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
-        if (need > 0) embed.setFooter({ text: `${formatNumber(need)} pts to next rank!` });
+        let footerText = `PID: ${BOT_PROCESS_ID}`;
+        if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+        
+        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} claimed **+${formatNumber(amount)}** pts for **${category}**!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
         
         const payload = { embeds:[embed], ephemeral:false };
         if (achievements.length) { 
             await interaction.editReply(payload); 
-            return interaction.followUp({ embeds: [new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n'))], flags: [MessageFlags.Ephemeral] }); 
+            return interaction.followUp({ embeds: [new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` })], flags: [MessageFlags.Ephemeral] }); 
         }
         return interaction.editReply(payload);
     }
@@ -364,13 +338,15 @@ class CommandHandler {
         if (!userRow) return interaction.editReply({ content: 'Error updating score.', flags: [MessageFlags.Ephemeral] });
         const { cur, need } = nextRankProgress(userRow.total);
         
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} logged **${formatNumber(km)}km** ${activity} → **+${formatNumber(amount)}** pts!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
-        if (need > 0) embed.setFooter({ text: `${formatNumber(need)} pts to next rank!` });
+        let footerText = `PID: ${BOT_PROCESS_ID}`;
+        if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+        
+        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} logged **${formatNumber(km)}km** ${activity} → **+${formatNumber(amount)}** pts!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
         
         const payload = { embeds:[embed], ephemeral: false };
          if (achievements.length) { 
              await interaction.editReply(payload); 
-             return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')) ], flags: [MessageFlags.Ephemeral] }); 
+             return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); 
          }
         return interaction.editReply(payload);
     }
@@ -439,42 +415,64 @@ class CommandHandler {
         if (!userRow) return interaction.editReply({ content: 'Error updating score.', flags: [MessageFlags.Ephemeral] });
         const { cur, need } = nextRankProgress(userRow.total);
         
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(description).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL());
-        if (need > 0) embed.setFooter({ text: `${formatNumber(need)} pts to next rank!` });
+        let footerText = `PID: ${BOT_PROCESS_ID}`;
+        if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+        
+        const embed = new EmbedBuilder().setColor(cur.color).setDescription(description).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
         
         const payload = { embeds:[embed], ephemeral:false }; 
         if (achievements.length) { 
              await interaction.editReply(payload); 
-             return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')) ], flags: [MessageFlags.Ephemeral] }); 
+             return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); 
         }
         return interaction.editReply(payload);
     }
 
     async handleProtein(interaction) { 
         const { guild, user, options } = interaction; const subcommand = options.getSubcommand(); const targetUser = options.getUser('user') || user;
-        if (subcommand === 'total') { const since = getPeriodStart('day'); const result = this.db.stmts.getDailyProtein.get(guild.id, targetUser.id, since); const totalProtein = result?.total || 0; const embed = new EmbedBuilder().setColor(0x5865F2).setTitle(`🥩 Daily Protein for ${targetUser.displayName}`).setDescription(`Logged **${formatNumber(totalProtein)}g** protein today.`).setThumbnail(targetUser.displayAvatarURL()); return interaction.editReply({ embeds: [embed] }); } 
+        if (subcommand === 'total') { const since = getPeriodStart('day'); const result = this.db.stmts.getDailyProtein.get(guild.id, targetUser.id, since); const totalProtein = result?.total || 0; const embed = new EmbedBuilder().setColor(0x5865F2).setTitle(`🥩 Daily Protein for ${targetUser.displayName}`).setDescription(`Logged **${formatNumber(totalProtein)}g** protein today.`).setThumbnail(targetUser.displayAvatarURL()).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }); return interaction.editReply({ embeds: [embed] }); } 
         let proteinGrams = 0; let itemName = '';
         if (subcommand === 'add_item') { const k = options.getString('item', true); const s = PROTEIN_SOURCES[k]; const q = options.getInteger('quantity', true); proteinGrams = s.protein_per_unit * q; itemName = `${q} ${s.name}`; } 
         else if (subcommand === 'add_grams') { const k = options.getString('item', true); const s = PROTEIN_SOURCES[k]; const g = options.getNumber('grams', true); proteinGrams = s.protein_per_unit * g; itemName = `${g}g of ${s.name}`; } 
         else if (subcommand === 'log_direct') { const g = options.getNumber('grams', true); const n = options.getString('source') || 'direct source'; proteinGrams = g; itemName = n; }
         this.db.stmts.addProteinLog.run(guild.id, user.id, itemName, proteinGrams, Math.floor(Date.now() / 1000));
         const since = getPeriodStart('day'); const result = this.db.stmts.getDailyProtein.get(guild.id, user.id, since); const totalProtein = result?.total || 0;
-        const embed = new EmbedBuilder().setColor(0x2ECC71).setTitle('✅ Protein Logged!').setDescription(`${user.toString()} added **${formatNumber(proteinGrams)}g** protein from **${itemName}**.`).addFields({ name: 'Daily Total', value: `Today: **${formatNumber(totalProtein)}g** protein.` }).setThumbnail(user.displayAvatarURL());
+        const embed = new EmbedBuilder().setColor(0x2ECC71).setTitle('✅ Protein Logged!').setDescription(`${user.toString()} added **${formatNumber(proteinGrams)}g** protein from **${itemName}**.`).addFields({ name: 'Daily Total', value: `Today: **${formatNumber(totalProtein)}g** protein.` }).setThumbnail(user.displayAvatarURL()).setFooter({ text: `PID: ${BOT_PROCESS_ID}` });
         return interaction.editReply({ embeds: [embed], ephemeral: false }); 
     }
 
     async handleJunk(interaction) { 
         const { guild, user, options } = interaction; const item = options.getString('item', true); const deduction = DEDUCTIONS[item]; const msgs = ["Balance is key!", "One step back, two forward!", "Honesty is progress!", "Treats happen!", "Acknowledge and move on!"]; const msg = msgs[Math.floor(Math.random() * msgs.length)];
         this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'junk', amount: -deduction.points, reason: `junk:${item}` }); const userRow = this.db.stmts.getUser.get(guild.id, user.id); const total = userRow ? userRow.total : 0;
-        const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${user.toString()} logged ${deduction.emoji} **${deduction.label}** (-**${formatNumber(deduction.points)}** pts).`).addFields({ name: "Total", value: `🏆 ${formatNumber(total)}` }).setFooter({ text: msg });
+        const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${user.toString()} logged ${deduction.emoji} **${deduction.label}** (-**${formatNumber(deduction.points)}** pts).`).addFields({ name: "Total", value: `🏆 ${formatNumber(total)}` }).setFooter({ text: `${msg} | PID: ${BOT_PROCESS_ID}` });
         return interaction.editReply({ embeds: [embed], ephemeral: false }); 
     }
 
     async handleMyScore(interaction) { 
-        const { guild, user } = interaction; const userRow = this.db.stmts.getUser.get(guild.id, user.id) || { total: 0, current_streak: 0 }; const { pct, cur, need } = nextRankProgress(userRow.total); const ach = this.db.stmts.getUserAchievements.all(guild.id, user.id).map(r => r.achievement_id);
-        const embed = new EmbedBuilder().setColor(cur.color).setAuthor({ name: user.displayName, iconURL: user.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields({ name: 'Points', value: formatNumber(userRow.total), inline: true }, { name: 'Streak', value: `🔥 ${userRow.current_streak || 0}d`, inline: true }, { name: 'Progress', value: progressBar(pct), inline: false }, { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' });
-        if (need > 0) embed.setFooter({ text: `${formatNumber(need)} pts to next rank!` });
-        return interaction.editReply({ embeds: [embed] }); 
+        // MODIFIED: Added user option
+        const { guild, options } = interaction; 
+        const targetUser = options.getUser('user') || interaction.user; // Get target or self
+        
+        const userRow = this.db.stmts.getUser.get(guild.id, targetUser.id) || { total: 0, current_streak: 0 }; 
+        const { pct, cur, need } = nextRankProgress(userRow.total); 
+        const ach = this.db.stmts.getUserAchievements.all(guild.id, targetUser.id).map(r => r.achievement_id);
+        
+        const embed = new EmbedBuilder()
+            .setColor(cur.color)
+            .setAuthor({ name: targetUser.displayName, iconURL: targetUser.displayAvatarURL() }) // Use target's info
+            .setTitle(`Rank: ${cur.name}`)
+            .addFields(
+                { name: 'Points', value: formatNumber(userRow.total), inline: true }, 
+                { name: 'Streak', value: `🔥 ${userRow.current_streak || 0}d`, inline: true }, 
+                { name: 'Progress', value: progressBar(pct), inline: false }, 
+                { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' }
+            );
+        
+        let footerText = `PID: ${BOT_PROCESS_ID}`;
+        if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+        embed.setFooter({ text: footerText });
+        
+        return interaction.editReply({ embeds: [embed] }); // Ephemeral handled by main
     }
 
     // Handles All-Time leaderboard (/leaderboard) - Uses points table
@@ -514,8 +512,11 @@ class CommandHandler {
             const userIds = rows.map(r => r.userId); 
             const members = await guild.members.fetch({ user: userIds }).catch(() => new Map());
             const entries = rows.map(row => { const m = members.get(row.userId); const n = m?.displayName || 'Unknown'; const s = formatNumber(row.score); const e = { 1: '🥇', 2: '🥈', 3: '🥉' }[row.rank] || `**${row.rank}.**`; return `${e} ${n} - \`${s}\`${cat === 'streak' ? ' days' : ''}`; });
-            const embed = new EmbedBuilder().setTitle(`🏆 Leaderboard: ${subtitle}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp();
-            if (cat === 'all' && selfRank && !rows.some(r => r.userId === user.id)) embed.setFooter({ text: `Your Rank: #${selfRank.rank} (${formatNumber(selfRank.score)} pts)` });
+            
+            let footerText = `PID: ${BOT_PROCESS_ID}`;
+            if (cat === 'all' && selfRank && !rows.some(r => r.userId === user.id)) footerText = `Your Rank: #${selfRank.rank} (${formatNumber(selfRank.score)} pts) | ${footerText}`;
+            
+            const embed = new EmbedBuilder().setTitle(`🏆 Leaderboard: ${subtitle}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp().setFooter({ text: footerText });
             return interaction.editReply({ embeds: [embed] }); 
         } catch (e) { console.error('LB Error:', e); return interaction.editReply({ content: '❌ Error generating leaderboard.' }); }
     }
@@ -539,7 +540,7 @@ class CommandHandler {
             rows = rows.map((r, i) => ({ ...r, rank: i+1 }));
             const userIds = rows.map(r => r.userId); const members = await guild.members.fetch({ user: userIds }).catch(() => new Map());
             const entries = rows.map(row => { const m = members.get(row.userId); const n = m?.displayName || 'Unknown'; const s = formatNumber(row.score); const e = { 1: '🥇', 2: '🥈', 3: '🥉' }[row.rank] || `**${row.rank}.**`; return `${e} ${n} - \`${s}\``; });
-            const embed = new EmbedBuilder().setTitle(`📅 Leaderboard: ${subtitle}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp();
+            const embed = new EmbedBuilder().setTitle(`📅 Leaderboard: ${subtitle}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp().setFooter({ text: `PID: ${BOT_PROCESS_ID}` });
             return interaction.editReply({ embeds: [embed] }); 
         } catch (e) { console.error('Period LB Error:', e); return interaction.editReply({ content: '❌ Error generating periodic leaderboard.' }); }
     }
@@ -568,7 +569,7 @@ async function main() {
     if (!CONFIG.token || !CONFIG.appId) { console.error('Missing env vars'); process.exit(1); }
 
     const database = new PointsDatabase(CONFIG.dbFile);
-    // **ADDED:** Reconcile totals on startup
+    // **Run reconciliation on startup**
     reconcileTotals(database.db);
     
     const handler = new CommandHandler(database);
@@ -589,7 +590,7 @@ async function main() {
     const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
     client.once('clientReady', (c) => { 
-        console.log(`Logged in: ${c.user.tag} | Servers: ${c.guilds.cache.size}`);
+        console.log(`Logged in: ${c.user.tag} | Servers: ${c.guilds.cache.size} | PID: ${BOT_PROCESS_ID}`);
         setInterval(async () => { try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { console.error(`DM fail ${r.user_id}: ${e.message}`); } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("Reminder Error:", e); } }, 60000);
     });
 
@@ -602,7 +603,7 @@ async function main() {
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false; 
-            if (interaction.commandName === 'recalculate') shouldBeEphemeral = true; // Make recalculate ephemeral
+            if (interaction.commandName === 'recalculate') shouldBeEphemeral = true;
 
             await interaction.deferReply({ flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined });
 
@@ -628,7 +629,7 @@ async function main() {
                     case 'recalculate':
                         await interaction.editReply({ content: '🔄 Recalculating totals... this may take a moment.'});
                         reconcileTotals(database.db); // Pass the raw db connection
-                        await interaction.editReply({ content: '✅ Totals recalculated successfully!' });
+                        await interaction.editReply({ content: `✅ Totals recalculated successfully! | PID: ${BOT_PROCESS_ID}` });
                         break;
                     default:
                          console.warn(`Unhandled: ${commandName}`);
