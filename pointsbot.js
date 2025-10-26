@@ -1,4 +1,4 @@
-// pointsbot.js - Final Code incorporating SQL schema, UUID keys, and export command
+// pointsbot.js - Final Code with WAL Checkpoint Fixes and Leaderboard Fix
 import 'dotenv/config';
 import http from 'node:http'; // Ensure http is imported
 import crypto from 'node:crypto'; // Use crypto for UUID
@@ -43,7 +43,7 @@ const RANKS = [ { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 }, { mi
 const ACHIEVEMENTS = [ { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn 1 point' }, { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' }, { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' }, { id: 'streak_7', name: '🔥 Week Warrior', requirement: (stats) => stats.current_streak >= 7, description: 'Maintain a 7-day streak' }, { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' } ];
 const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
 const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','carwash','dishwashing'];
-const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES]; // Excludes 'bonus' for consistency if not added
+const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES];
 
 /* =========================
     DATABASE CLASS
@@ -58,18 +58,17 @@ class PointsDatabase {
             console.log("✅ [DB] Database connection opened successfully.");
         } catch (dbErr) { console.error("❌ [DB FATAL] Could not open database file:", dbErr); process.exit(1); }
 
-        this.initSchema(); // Ensures tables/constraints/indexes exist
-        this.performMigrations(); // Adds missing columns if needed
+        this.initSchema();
+        this.performMigrations();
         this.prepareStatements();
         console.log("✅ [DB] Database class initialized.");
     }
 
-    // Ensures base tables and crucial constraints/indexes exist
     initSchema() {
         try {
             this.db.exec(`
               CREATE TABLE IF NOT EXISTS points ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0, exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0, cooking REAL NOT NULL DEFAULT 0, sweeping REAL NOT NULL DEFAULT 0, toiletcleaning REAL NOT NULL DEFAULT 0, gardening REAL NOT NULL DEFAULT 0, carwash REAL NOT NULL DEFAULT 0, dishwashing REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
-              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT /* REMOVED UNIQUE HERE */ );
+              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT );
               CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
               CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) );
               CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
@@ -79,14 +78,12 @@ class PointsDatabase {
               CREATE INDEX IF NOT EXISTS idx_points_log_category ON points_log (category);
               CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
               CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
-              -- RE-ADD UNIQUE INDEX with WHERE clause
               CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;
             `);
             console.log("[DB] initSchema executed (ensured tables and indexes exist).");
         } catch (schemaErr) { console.error("❌ [DB FATAL] Error initializing schema:", schemaErr); process.exit(1); }
     }
 
-    // Only handles adding NEW columns or non-unique indexes
     performMigrations() {
          try {
             console.log("🔄 [DB Migration] Checking for necessary schema additions...");
@@ -94,8 +91,6 @@ class PointsDatabase {
                 try { this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); }
                 catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
-            // Example: Add a potential 'bonus' column if needed later
-            // try { this.db.exec(`ALTER TABLE points ADD COLUMN bonus REAL NOT NULL DEFAULT 0;`); } catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for bonus:`, e);}
             console.log("✅ [DB Migration] Schema addition checks complete.");
         } catch(e) { console.error("❌ [DB Migration Error] Error during migration checks:", e); }
     }
@@ -103,18 +98,24 @@ class PointsDatabase {
     prepareStatements() {
         try {
             const S = this.stmts = {};
-            // Correct the ON CONFLICT clause to match the PARTIAL index
             S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) WHERE event_key IS NOT NULL DO NOTHING`);
-
-            // Other statements...
             S.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
             S.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
             S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
             S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
             S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
-            S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total > 0 ORDER BY total DESC LIMIT 10`);
-            ALL_POINT_COLUMNS.forEach(col => { S[`lbAllCatFromPoints_${col}`] = this.db.prepare(`SELECT user_id as userId, ${col} as score FROM points WHERE guild_id=? AND ${col} > 0 ORDER BY ${col} DESC LIMIT 10`); });
-            S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total > 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
+            
+            // --- LEADERBOARD FIX ---
+            // Changed `total > 0` to `total >= 0` to include users with 0 points
+            S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total >= 0 ORDER BY total DESC LIMIT 10`);
+            
+            ALL_POINT_COLUMNS.forEach(col => {
+                // Keep category leaderboards as `> 0` (no need to show 0-point entries)
+                S[`lbAllCatFromPoints_${col}`] = this.db.prepare(`SELECT user_id as userId, ${col} as score FROM points WHERE guild_id=? AND ${col} > 0 ORDER BY ${col} DESC LIMIT 10`);
+            });
+            // -------------------------
+
+            S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total >= 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`); // Also changed to >= 0
             S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
             S.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
             S.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`);
@@ -152,23 +153,30 @@ class PointsDatabase {
       if (EXERCISE_CATEGORIES.includes(category)) { targetCol = 'exercise'; }
       else if (category === 'junk') { const up = this.stmts.getUser.get(guildId, userId) || {}; targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise'; }
       else if (!safeCols.includes(category)) { console.warn(`[modifyPoints Warn] Unknown category '${category}'`); targetCol = null; }
+      
       if (targetCol && safeCols.includes(targetCol)) {
           const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
           stmt.run({ amt: modAmount, gid: guildId, uid: userId });
       }
+      
       const recalc = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = ? AND user_id = ?`);
       recalc.run(guildId, userId);
 
-      // Force checkpoint after update, before logging
+      // --- STALE SCORE FIX ---
+      // Force the database changes to be written to the main file *before* replying.
       try {
           this.db.pragma('wal_checkpoint(FULL)');
-      } catch (cpErr) { console.error(`[modifyPoints DB Error] WAL Checkpoint failed for ${userId}:`, cpErr); }
+      } catch (cpErr) {
+          console.error(`[modifyPoints DB Error] WAL Checkpoint failed for ${userId}:`, cpErr);
+      }
+      // -----------------------
 
       const eventKey = crypto.randomUUID();
       try {
           const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
           if (info.changes === 0 && this.db.inTransaction === false) { console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); }
       } catch (err) { console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); }
+      
       if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); }
       return [];
     }
@@ -208,11 +216,14 @@ function reconcileTotals(db) {
          if (col === 'exercise') { return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`; }
          else { return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`; }
      }).join(',\n        ');
+
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categorySums} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
+
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
     const ensureUserStmt = db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`);
+
     const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all();
      console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
 
@@ -257,11 +268,11 @@ function createKeepAliveServer() { // Restored definition
 }
 
 
-// --- buildCommands (Includes /admin resetpoints and export_user_log) ---
+// --- buildCommands (Added /admin resetpoints and export_user_log) ---
 function buildCommands() {
     const fixedPointCategories = Object.keys(POINTS);
-    const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' /*, 'bonus' optional*/ ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
-    const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories /*, 'bonus' optional*/ ];
+    const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
+    const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories ];
     const tableChoices = [ { name: 'Points', value: 'points' }, { name: 'Points Log', value: 'points_log' }, { name: 'Cooldowns', value: 'cooldowns' }, { name: 'Buddies', value: 'buddies' }, { name: 'Achievements', value: 'achievements' }, { name: 'Protein Log', value: 'protein_log' }, { name: 'Reminders', value: 'reminders' } ];
 
     return [
@@ -300,7 +311,7 @@ function buildCommands() {
             .addSubcommand(s=>s.setName('show_table').setDescription('🔒 Dumps table content (Top 30)').addStringOption(o=>o.setName('table_name').setRequired(true).setDescription('Table').addChoices(...tableChoices)))
             .addSubcommand(s=>s.setName('download_all_tables').setDescription('🔒 Downloads all tables as JSON.'))
             .addSubcommand(s=>s.setName('resetpoints').setDescription('⚠️ Reset ALL points & logs for this server.').addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type the server name to confirm')))
-            .addSubcommand(s=>s.setName('export_user_log').setDescription('🔒 Exports complete points_log for a user.').addUserOption(o=>o.setName('user').setDescription('User').setRequired(true))), // Added export_user_log
+            .addSubcommand(s=>s.setName('export_user_log').setDescription('🔒 Exports complete points_log for a user.').addUserOption(o=>o.setName('user').setDescription('User').setRequired(true))),
         new SlashCommandBuilder().setName('recalculate').setDescription('🧮 Admin: Recalculate totals from log').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
         new SlashCommandBuilder().setName('db_download').setDescription('🔒 Admin: Download DB file.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     ].map(c => c.toJSON());
@@ -408,7 +419,7 @@ class CommandHandler {
         const { guild, user, options } = interaction; const sub = options.getSubcommand();
         const targetUser = options.getUser('user');
         if (sub === 'resetpoints') { return this.handleResetPoints(interaction); }
-        if (sub === 'export_user_log') { return this.handleExportUserLog(interaction); } // Added routing
+        if (sub === 'export_user_log') { return this.handleExportUserLog(interaction); }
         if (sub === 'clear_user_data') {
             if (!targetUser) return interaction.editReply({ content: 'User required.', flags: [MessageFlags.Ephemeral] }); const confirm = options.getString('confirm', true); if (confirm !== 'CONFIRM') { return interaction.editReply({ content: '❌ Type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] }); }
             try { this.db.db.transaction(() => { console.log(`[Admin clear] Start TX for ${targetUser.id}`); let tc=0; try { const i=this.db.stmts.clearUserPoints.run(guild.id, targetUser.id); console.log(`Cleared points: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear pts:`,e); throw e;} try { const i=this.db.stmts.clearUserLog.run(guild.id, targetUser.id); console.log(`Cleared log: ${i.changes}`); tc+=i.changes; if(i.changes===0) console.warn(`WARN: log delete 0 changes`); } catch(e){console.error(`Err clear log:`,e); throw e;} try { const i=this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id); console.log(`Cleared achievements: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear ach:`,e); throw e;} try { const i=this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id); console.log(`Cleared cooldowns: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear cd:`,e); throw e;} try { const i=this.db.stmts.clearUserProtein.run(guild.id, targetUser.id); console.log(`Cleared protein: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear prot:`,e); throw e;} try { const i=this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); console.log(`Cleared buddy: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear buddy:`,e); throw e;} console.log(`[Admin clear] TX finished. Rows (approx): ${tc}`); })();
@@ -452,13 +463,12 @@ class CommandHandler {
             await interaction.editReply({ content: `✅ Exported complete points log (${rows.length} entries) for ${targetUser.tag}:`, files: [attachment], flags: MessageFlags.Ephemeral });
             console.log(`[Admin export_user_log] Sent log dump for user ${targetUser.id}.`);
         } catch (err) { console.error(`❌ [Admin export_user_log] Error exporting log for user ${targetUser.id}:`, err); await interaction.editReply({ content: '❌ An unexpected error occurred while exporting the user log.' }).catch(()=>{}); }
-    } // End handleExportUserLog
-
+    }
 
     async handleDownloadAllTables(interaction) {
         console.log(`[Admin download_all_tables] Request by ${interaction.user.tag}`); const attachments = []; let fileCount = 0; const MAX_ATTACHMENTS = 10;
         try { const tables = this.db.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';`).all(); console.log(`Found tables: ${tables.map(t=>t.name).join(', ')}`);
-            for (const table of tables) { if (fileCount >= MAX_ATTACHMENTS) { console.warn(`Attach limit ${MAX_ATTACHMENTS}. Skipping.`); await interaction.followUp({ content: `⚠️ Attach limit ${MAX_ATTACHMENTS}. Skipped some.`, flags: MessageFlags.Ephemeral }).catch(()=>{}); break; }
+            for (const table of tables) { if (fileCount >= MAX_ATTACHMENTS) { console.warn(`Attach limit ${MAX_ATTACHMENTS}. Skipping.`); await interaction.followUp({ content: `⚠️ Attach limit ${MAX_ATTACHMENTS}. Skipped some.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); break; }
                 const tN = table.name; console.log(`Processing: ${tN}`); try { const rows = this.db.db.prepare(`SELECT * FROM ${tN}`).all(); if (rows.length === 0) { console.log(`Table ${tN} empty. Skip.`); continue; } const data = JSON.stringify(rows, null, 2); const buffer = Buffer.from(data); if (buffer.byteLength > 20*1024*1024) { console.warn(`Table ${tN} > 20MB. Skip.`); await interaction.followUp({ content: `⚠️ \`${tN}\` > 20MB. Skipped.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); continue; } attachments.push(new AttachmentBuilder(buffer, { name: `${tN}.json` })); fileCount++; console.log(`Prepared ${tN} (${rows.length} rows).`); }
                 catch (tableErr) { console.error(`Error fetch ${tN}:`, tableErr); await interaction.followUp({ content: `❌ Error fetch \`${tN}\`. Check logs.`, flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
             }
@@ -478,7 +488,7 @@ class CommandHandler {
 ========================= */
 async function main() {
     console.log("[Startup] Starting main function...");
-    createKeepAliveServer(); // RESTORED CALL
+    createKeepAliveServer();
     if (!CONFIG.token || !CONFIG.appId) { console.error('[Startup Error] Missing DISCORD_TOKEN or APPLICATION_ID env vars!'); process.exit(1); }
     let database; try { console.log("[Startup] Initializing database..."); database = new PointsDatabase(CONFIG.dbFile); } catch (e) { console.error("❌ [Startup FATAL] Failed to initialize Database class:", e); process.exit(1); }
     console.log("[Startup] Starting initial data reconciliation..."); reconcileTotals(database.db); console.log("[Startup] Finished reconcileTotals function call.");
@@ -488,7 +498,6 @@ async function main() {
     try { const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId); await rest.put(route, { body: buildCommands() }); console.log('✅ [Startup] Registered application commands.'); }
     catch (err) { console.error('❌ [Startup Error] Command registration failed:', err); if (err.rawError) console.error('Validation Errors:', JSON.stringify(err.rawError, null, 2)); else if (err.errors) console.error('Validation Errors:', JSON.stringify(err.errors, null, 2)); process.exit(1); }
     console.log("[Startup] Initializing Discord Client..."); const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
-
     client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
 
     // --- InteractionCreate Handler ---
@@ -500,7 +509,6 @@ async function main() {
         let initialReplySuccessful = false;
         try {
             let shouldBeEphemeral = ['buddy', 'nudge', 'remind', 'admin', 'myscore', 'recalculate', 'db_download'].includes(interaction.commandName);
-            // Ensure admin utility commands are ephemeral
             if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data', 'export_user_log'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
