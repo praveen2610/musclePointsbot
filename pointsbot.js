@@ -1,7 +1,7 @@
-// pointsbot.js - Reverted to Partial Index for event_key
+// pointsbot.js - Final Code incorporating SQL schema, UUID keys, and export command
 import 'dotenv/config';
-import http from 'node:http';
-import crypto from 'node:crypto';
+import http from 'node:http'; // Ensure http is imported
+import crypto from 'node:crypto'; // Use crypto for UUID
 import {
     Client, GatewayIntentBits, REST, Routes,
     SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits, MessageFlags
@@ -43,7 +43,7 @@ const RANKS = [ { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 }, { mi
 const ACHIEVEMENTS = [ { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn 1 point' }, { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' }, { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' }, { id: 'streak_7', name: '🔥 Week Warrior', requirement: (stats) => stats.current_streak >= 7, description: 'Maintain a 7-day streak' }, { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' } ];
 const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
 const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','carwash','dishwashing'];
-const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES];
+const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES]; // Excludes 'bonus' for consistency if not added
 
 /* =========================
     DATABASE CLASS
@@ -69,7 +69,7 @@ class PointsDatabase {
         try {
             this.db.exec(`
               CREATE TABLE IF NOT EXISTS points ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0, exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0, cooking REAL NOT NULL DEFAULT 0, sweeping REAL NOT NULL DEFAULT 0, toiletcleaning REAL NOT NULL DEFAULT 0, gardening REAL NOT NULL DEFAULT 0, carwash REAL NOT NULL DEFAULT 0, dishwashing REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
-              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT /* Removed UNIQUE here */ );
+              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT /* REMOVED UNIQUE HERE */ );
               CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
               CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) );
               CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
@@ -79,7 +79,7 @@ class PointsDatabase {
               CREATE INDEX IF NOT EXISTS idx_points_log_category ON points_log (category);
               CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
               CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
-              -- Add the UNIQUE INDEX definition back
+              -- RE-ADD UNIQUE INDEX with WHERE clause
               CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;
             `);
             console.log("[DB] initSchema executed (ensured tables and indexes exist).");
@@ -94,6 +94,8 @@ class PointsDatabase {
                 try { this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); }
                 catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
+            // Example: Add a potential 'bonus' column if needed later
+            // try { this.db.exec(`ALTER TABLE points ADD COLUMN bonus REAL NOT NULL DEFAULT 0;`); } catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for bonus:`, e);}
             console.log("✅ [DB Migration] Schema addition checks complete.");
         } catch(e) { console.error("❌ [DB Migration Error] Error during migration checks:", e); }
     }
@@ -101,7 +103,7 @@ class PointsDatabase {
     prepareStatements() {
         try {
             const S = this.stmts = {};
-            // Correct the ON CONFLICT clause to match the INDEX
+            // Correct the ON CONFLICT clause to match the PARTIAL index
             S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) WHERE event_key IS NOT NULL DO NOTHING`);
 
             // Other statements...
@@ -156,12 +158,17 @@ class PointsDatabase {
       }
       const recalc = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = ? AND user_id = ?`);
       recalc.run(guildId, userId);
+
+      // Force checkpoint after update, before logging
+      try {
+          this.db.pragma('wal_checkpoint(FULL)');
+      } catch (cpErr) { console.error(`[modifyPoints DB Error] WAL Checkpoint failed for ${userId}:`, cpErr); }
+
       const eventKey = crypto.randomUUID();
       try {
           const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
-          // Only log duplicates if changes === 0 and error wasn't thrown (unlikely with DO NOTHING)
-          if (info.changes === 0 && this.db.db.changes() === 0) { console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); }
-      } catch (err) { console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); } // Log errors but don't crash
+          if (info.changes === 0 && this.db.inTransaction === false) { console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); }
+      } catch (err) { console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); }
       if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); }
       return [];
     }
@@ -250,11 +257,11 @@ function createKeepAliveServer() { // Restored definition
 }
 
 
-// --- buildCommands (Added /admin resetpoints) ---
+// --- buildCommands (Includes /admin resetpoints and export_user_log) ---
 function buildCommands() {
     const fixedPointCategories = Object.keys(POINTS);
-    const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
-    const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories ];
+    const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' /*, 'bonus' optional*/ ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
+    const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories /*, 'bonus' optional*/ ];
     const tableChoices = [ { name: 'Points', value: 'points' }, { name: 'Points Log', value: 'points_log' }, { name: 'Cooldowns', value: 'cooldowns' }, { name: 'Buddies', value: 'buddies' }, { name: 'Achievements', value: 'achievements' }, { name: 'Protein Log', value: 'protein_log' }, { name: 'Reminders', value: 'reminders' } ];
 
     return [
@@ -292,13 +299,15 @@ function buildCommands() {
             .addSubcommand(s=>s.setName('clear_user_data').setDescription('🔥 Wipe ALL data for a user').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User')).addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type CONFIRM')))
             .addSubcommand(s=>s.setName('show_table').setDescription('🔒 Dumps table content (Top 30)').addStringOption(o=>o.setName('table_name').setRequired(true).setDescription('Table').addChoices(...tableChoices)))
             .addSubcommand(s=>s.setName('download_all_tables').setDescription('🔒 Downloads all tables as JSON.'))
-            .addSubcommand(s=>s.setName('resetpoints').setDescription('⚠️ Reset ALL points & logs for this server.').addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type the server name to confirm'))),
+            .addSubcommand(s=>s.setName('resetpoints').setDescription('⚠️ Reset ALL points & logs for this server.').addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type the server name to confirm')))
+            .addSubcommand(s=>s.setName('export_user_log').setDescription('🔒 Exports complete points_log for a user.').addUserOption(o=>o.setName('user').setDescription('User').setRequired(true))), // Added export_user_log
         new SlashCommandBuilder().setName('recalculate').setDescription('🧮 Admin: Recalculate totals from log').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
         new SlashCommandBuilder().setName('db_download').setDescription('🔒 Admin: Download DB file.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     ].map(c => c.toJSON());
 }
 
-// --- CommandHandler (Includes handleResetPoints and all others) ---
+
+// --- CommandHandler (Includes handleResetPoints and handleExportUserLog) ---
 class CommandHandler {
     constructor(db) { this.db = db; }
 
@@ -399,6 +408,7 @@ class CommandHandler {
         const { guild, user, options } = interaction; const sub = options.getSubcommand();
         const targetUser = options.getUser('user');
         if (sub === 'resetpoints') { return this.handleResetPoints(interaction); }
+        if (sub === 'export_user_log') { return this.handleExportUserLog(interaction); } // Added routing
         if (sub === 'clear_user_data') {
             if (!targetUser) return interaction.editReply({ content: 'User required.', flags: [MessageFlags.Ephemeral] }); const confirm = options.getString('confirm', true); if (confirm !== 'CONFIRM') { return interaction.editReply({ content: '❌ Type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] }); }
             try { this.db.db.transaction(() => { console.log(`[Admin clear] Start TX for ${targetUser.id}`); let tc=0; try { const i=this.db.stmts.clearUserPoints.run(guild.id, targetUser.id); console.log(`Cleared points: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear pts:`,e); throw e;} try { const i=this.db.stmts.clearUserLog.run(guild.id, targetUser.id); console.log(`Cleared log: ${i.changes}`); tc+=i.changes; if(i.changes===0) console.warn(`WARN: log delete 0 changes`); } catch(e){console.error(`Err clear log:`,e); throw e;} try { const i=this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id); console.log(`Cleared achievements: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear ach:`,e); throw e;} try { const i=this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id); console.log(`Cleared cooldowns: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear cd:`,e); throw e;} try { const i=this.db.stmts.clearUserProtein.run(guild.id, targetUser.id); console.log(`Cleared protein: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear prot:`,e); throw e;} try { const i=this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); console.log(`Cleared buddy: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear buddy:`,e); throw e;} console.log(`[Admin clear] TX finished. Rows (approx): ${tc}`); })();
@@ -427,6 +437,23 @@ class CommandHandler {
             return interaction.editReply({ content: `✅ All points, logs, cooldowns, achievements, etc. reset for **${guild.name}**.`, flags: [MessageFlags.Ephemeral] });
         } catch (err) { console.error(`[Admin resetpoints] Error for guild ${guild.id}:`, err); return interaction.editReply({ content: `❌ Error during reset. Check logs.`, flags: [MessageFlags.Ephemeral] }); }
     }
+
+    async handleExportUserLog(interaction) {
+        const { guild, options } = interaction;
+        const targetUser = options.getUser('user', true);
+        console.log(`[Admin export_user_log] Request received for user ${targetUser.id} (${targetUser.tag}) by ${interaction.user.tag}`);
+        try {
+            const rows = this.db.db.prepare(`SELECT * FROM points_log WHERE guild_id = ? AND user_id = ? ORDER BY ts ASC`).all(guild.id, targetUser.id);
+            if (rows.length === 0) { console.log(`[Admin export_user_log] No log entries found for user ${targetUser.id}`); return interaction.editReply({ content: `✅ No point log entries found for ${targetUser.tag}.`, flags: MessageFlags.Ephemeral }); }
+            console.log(`[Admin export_user_log] Found ${rows.length} log entries for user ${targetUser.id}`);
+            const data = JSON.stringify(rows, null, 2); const buffer = Buffer.from(data);
+             if (buffer.byteLength > 20 * 1024 * 1024) { console.warn(`[Admin export_user_log] User ${targetUser.id}'s log data is too large (> 20MB).`); return interaction.editReply({ content: `❌ Export failed: User ${targetUser.tag}'s log data is too large (> 20MB) to attach.`, flags: MessageFlags.Ephemeral }); }
+            const attachment = new AttachmentBuilder(buffer, { name: `points_log_${targetUser.id}.json` });
+            await interaction.editReply({ content: `✅ Exported complete points log (${rows.length} entries) for ${targetUser.tag}:`, files: [attachment], flags: MessageFlags.Ephemeral });
+            console.log(`[Admin export_user_log] Sent log dump for user ${targetUser.id}.`);
+        } catch (err) { console.error(`❌ [Admin export_user_log] Error exporting log for user ${targetUser.id}:`, err); await interaction.editReply({ content: '❌ An unexpected error occurred while exporting the user log.' }).catch(()=>{}); }
+    } // End handleExportUserLog
+
 
     async handleDownloadAllTables(interaction) {
         console.log(`[Admin download_all_tables] Request by ${interaction.user.tag}`); const attachments = []; let fileCount = 0; const MAX_ATTACHMENTS = 10;
@@ -461,6 +488,7 @@ async function main() {
     try { const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId); await rest.put(route, { body: buildCommands() }); console.log('✅ [Startup] Registered application commands.'); }
     catch (err) { console.error('❌ [Startup Error] Command registration failed:', err); if (err.rawError) console.error('Validation Errors:', JSON.stringify(err.rawError, null, 2)); else if (err.errors) console.error('Validation Errors:', JSON.stringify(err.errors, null, 2)); process.exit(1); }
     console.log("[Startup] Initializing Discord Client..."); const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+
     client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
 
     // --- InteractionCreate Handler ---
@@ -472,7 +500,8 @@ async function main() {
         let initialReplySuccessful = false;
         try {
             let shouldBeEphemeral = ['buddy', 'nudge', 'remind', 'admin', 'myscore', 'recalculate', 'db_download'].includes(interaction.commandName);
-            if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
+            // Ensure admin utility commands are ephemeral
+            if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data', 'export_user_log'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
             if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
