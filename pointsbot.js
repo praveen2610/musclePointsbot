@@ -26,10 +26,6 @@ const CONFIG = {
     dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
 };
 
-// Debug gate to avoid noisy console output in production
-const DEBUG = (process.env.DEBUG === '1' || process.env.NODE_ENV === 'development');
-function debug(...args) { if (DEBUG) console.log(...args); }
-
 // --- Constants (PROTEIN_SOURCES, COOLDOWNS, POINTS, etc.) ---
 const PROTEIN_SOURCES = { /* ... (contents unchanged) ... */
     chicken_breast: { name: 'Chicken Breast (Cooked)', unit: 'gram', protein_per_unit: 0.31 },
@@ -234,19 +230,11 @@ class PointsDatabase {
             S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
             S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
             S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
-            // Fixed ON CONFLICT usage. Unique index on event_key (where not null) ensures duplicate prevention.
-            S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) DO NOTHING`);
+            S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) WHERE event_key IS NOT NULL DO NOTHING`);
             S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total > 0 ORDER BY total DESC LIMIT 10`);
             ALL_POINT_COLUMNS.forEach(col => {
                 S[`lbAllCatFromPoints_${col}`] = this.db.prepare(`SELECT user_id as userId, ${col} as score FROM points WHERE guild_id=? AND ${col} > 0 ORDER BY ${col} DESC LIMIT 10`);
             });
-            // Prepare per-column update statements to avoid dynamic prepare during runtime
-            ALL_POINT_COLUMNS.forEach(col => {
-                // Use a single UPDATE to update the category column and total atomically
-                S[`updateCol_${col}`] = this.db.prepare(`UPDATE points SET ${col} = MAX(0, ${col} + @amt), total = MAX(0, total + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
-            });
-            // Fallback: update total only (when category is unknown/null)
-            S.updateTotalOnly = this.db.prepare(`UPDATE points SET total = MAX(0, total + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
             S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total > 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
             S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
             // Note: lbSinceByCat prepared statement removed as it wasn't used correctly, fallback to dynamic query used in handler
@@ -274,60 +262,68 @@ class PointsDatabase {
         }
     }
 
-        // --- modifyPoints (optimized): use prepared per-column updates and wrap in transaction for atomicity ---
-        modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
-            // Ensure user exists in points table
-            this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
-            const modAmount = Number(amount) || 0;
-            debug(`[modifyPoints] Guild: ${guildId}, User: ${userId}, Cat: ${category}, Amount: ${amount}, ModAmount: ${modAmount}, Reason: ${reason}`);
-            if (modAmount === 0) return [];
+    // --- (modifyPoints unchanged) ---
+    modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
+      // Ensure user exists in points table
+      this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
+      const modAmount = Number(amount) || 0;
+      console.log(`[modifyPoints] Guild: ${guildId}, User: ${userId}, Cat: ${category}, Amount: ${amount}, ModAmount: ${modAmount}, Reason: ${reason}`);
+      if (modAmount === 0) {
+           console.log("[modifyPoints] ModAmount is 0, returning early.");
+           return [];
+      }
 
-            const safeCols = ALL_POINT_COLUMNS;
-            let logCategory = category;
-            let targetCol = category;
+      const safeCols = ALL_POINT_COLUMNS;
+      let logCategory = category;
+      let targetCol = category;
 
-            if (EXERCISE_CATEGORIES.includes(category)) targetCol = 'exercise';
-            else if (category === 'junk') {
-                    const userPoints = this.stmts.getUser.get(guildId, userId) || {};
-                    // pick highest category to deduct from
-                    targetCol = ALL_POINT_COLUMNS.slice().sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
-                    debug(`[modifyPoints] Junk deduction target column: ${targetCol}`);
-            } else if (!safeCols.includes(category)) {
-                    debug(`[modifyPoints Warn] Unknown category '${category}', applying to total only via log.`);
-                    targetCol = null;
-            }
+      if (EXERCISE_CATEGORIES.includes(category)) {
+          targetCol = 'exercise';
+      } else if (category === 'junk') {
+          const userPoints = this.stmts.getUser.get(guildId, userId) || {};
+          targetCol = ALL_POINT_COLUMNS.sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
+          console.log(`[modifyPoints] Junk deduction target column: ${targetCol}`);
+      } else if (!safeCols.includes(category)) {
+          console.warn(`[modifyPoints Warn] Unknown category '${category}', applying to total only via log.`);
+          targetCol = null;
+      }
 
-            // Transaction to update points and insert log atomically
-            const tx = this.db.transaction(() => {
-                if (targetCol && safeCols.includes(targetCol) && this.stmts[`updateCol_${targetCol}`]) {
-                    this.stmts[`updateCol_${targetCol}`].run({ amt: modAmount, gid: guildId, uid: userId });
-                    debug(`[modifyPoints DB] Updated ${targetCol} and total by ${modAmount} for ${userId}`);
-                } else {
-                    // Unknown category: update total only
-                    this.stmts.updateTotalOnly.run({ amt: modAmount, gid: guildId, uid: userId });
-                    debug(`[modifyPoints DB] Updated total only by ${modAmount} for ${userId}`);
-                }
+      if (targetCol && safeCols.includes(targetCol)) {
+          const stmt = this.db.prepare(`
+            UPDATE points
+            SET ${targetCol} = MAX(0, ${targetCol} + @amt), -- Prevent negative category points
+                updated_at = strftime('%s','now')
+            WHERE guild_id = @gid AND user_id = @uid
+          `);
+          stmt.run({ amt: modAmount, gid: guildId, uid: userId });
+          console.log(`[modifyPoints DB] Updated ${targetCol} column by ${modAmount} for ${userId}`);
+      } else {
+           console.log(`[modifyPoints DB] No specific column updated for category ${category}.`);
+      }
 
-                const keyData = `${guildId}:${userId}:${category}:${amount}:${reason || ''}:${notes || ''}:${Date.now()}`;
-                const eventKey = crypto.createHash('sha256').update(keyData).digest('hex');
+      // Recalculate total ensuring it's never negative
+      const recalc = this.db.prepare(`
+        UPDATE points
+        SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')})
+        WHERE guild_id = ? AND user_id = ?
+      `);
+      recalc.run(guildId, userId);
+       console.log(`[modifyPoints DB] Recalculated total for ${userId}`);
 
-                const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
-                debug(`[modifyPoints DB] Logged transaction. Changes: ${info.changes}`);
-            });
+      const keyData = `${guildId}:${userId}:${category}:${amount}:${reason || ''}:${notes || ''}:${Date.now()}`;
+      const eventKey = crypto.createHash('sha256').update(keyData).digest('hex');
 
-            try {
-                tx();
-            } catch (e) {
-                console.error(`[DB Error] modifyPoints transaction failed for ${guildId}/${userId}:`, e);
-                throw e;
-            }
+      const info = this.stmts.logPoints.run(
+        guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey
+      );
+       console.log(`[modifyPoints DB] Logged transaction. Changes: ${info.changes}`);
 
-            if (modAmount > 0) {
-                this.updateStreak(guildId, userId);
-                return this.checkAchievements(guildId, userId);
-            }
-            return [];
-        }
+      if (modAmount > 0) {
+        this.updateStreak(guildId, userId);
+        return this.checkAchievements(guildId, userId);
+      }
+      return [];
+    }
 
      updateStreak(guildId, userId) {
          try {
