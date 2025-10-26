@@ -1,4 +1,4 @@
-// pointsbot.js - Final Optimized Version
+// pointsbot.js - Final Optimized Version (Includes download_all_tables)
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -27,7 +27,7 @@ const CONFIG = {
 };
 
 // --- Constants (PROTEIN_SOURCES, COOLDOWNS, POINTS, etc.) ---
-const PROTEIN_SOURCES = { /* ... (contents unchanged) ... */
+const PROTEIN_SOURCES = {
     chicken_breast: { name: 'Chicken Breast (Cooked)', unit: 'gram', protein_per_unit: 0.31 },
     chicken_thigh:  { name: 'Chicken Thigh (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
     ground_beef:    { name: 'Ground Beef 85/15 (Cooked)', unit: 'gram', protein_per_unit: 0.26 },
@@ -54,7 +54,7 @@ const PROTEIN_SOURCES = { /* ... (contents unchanged) ... */
     peanuts:    { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 },
     protein_powder: { name: 'Protein Powder', unit: 'gram', protein_per_unit: 0.80 }
 };
-const COOLDOWNS = { /* ... (contents unchanged) ... */
+const COOLDOWNS = {
     gym: 12 * 60 * 60 * 1000,
     badminton: 12 * 60 * 60 * 1000,
     cricket: 12 * 60 * 60 * 1000,
@@ -68,7 +68,7 @@ const COOLDOWNS = { /* ... (contents unchanged) ... */
     toiletcleaning: 60 * 60 * 1000,
     dishwashing: 60 * 60 * 1000,
 };
-const POINTS = { /* ... (contents unchanged) ... */
+const POINTS = {
     gym: 2,
     badminton: 5,
     cricket: 5,
@@ -86,7 +86,7 @@ const DISTANCE_RATES = { walking: 0.5, jogging: 0.6, running: 0.7 };
 const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
 const PLANK_RATE_PER_MIN = 1;
 const PLANK_MIN_MIN = 0.75;
-const DEDUCTIONS = { /* ... (contents unchanged) ... */
+const DEDUCTIONS = {
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
     fries: { points: 3, emoji: '🍟', label: 'Fries' },
     soda: { points: 2, emoji: '🥤', label: 'Soda / Soft Drink' },
@@ -113,7 +113,7 @@ const DEDUCTIONS = { /* ... (contents unchanged) ... */
     medu_vada: { points: 3, emoji: '🍩', label: 'Medu Vada (Sambar/Chutney)' },
     masala_dosa: { points: 4, emoji: '🌯', label: 'Masala Dosa' },
 };
-const RANKS = [ /* ... (contents unchanged) ... */
+const RANKS = [
     { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 },
     { min: 20, name: "🌟 Beginner", color: 0x3498db, next: 50 },
     { min: 50, name: "💪 Athlete", color: 0x9b59b6, next: 100 },
@@ -123,7 +123,7 @@ const RANKS = [ /* ... (contents unchanged) ... */
     { min: 500, name: "🏆 Legend", color: 0xe74c3c, next: 1000 },
     { min: 1000, name: "👑 Godlike", color: 0x8e44ad, next: null }
 ];
-const ACHIEVEMENTS = [ /* ... (contents unchanged) ... */
+const ACHIEVEMENTS = [
     { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn your first point' },
     { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' },
     { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' },
@@ -147,7 +147,7 @@ class PointsDatabase {
             console.log("✅ [DB] Database connection opened successfully.");
         } catch (dbErr) {
             console.error("❌ [DB FATAL] Could not open database file:", dbErr);
-            process.exit(1); // Exit if DB can't be opened
+            process.exit(1);
         }
 
         this.performMigrations();
@@ -159,30 +159,22 @@ class PointsDatabase {
     performMigrations() {
          try {
             console.log("🔄 [DB Migration] Checking database schema...");
-            // Add chore columns to points table
             CHORE_CATEGORIES.forEach(c => {
                 try {
                     this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`);
                      console.log(`[DB Migration] Added column '${c}' to points table.`);
                 } catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
-
-            // Add event_key column to points_log table
             try {
                 this.db.exec(`ALTER TABLE points_log ADD COLUMN event_key TEXT;`);
                 console.log("[DB Migration] Added column 'event_key' to points_log table.");
             } catch (e) { if (!e.message.includes("duplicate column")) console.error("[DB Migration Error] Alter points_log adding event_key column:", e); }
-
-             // Create UNIQUE index for event_key
             try {
                 this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;`);
                 console.log("[DB Migration] Ensured unique index on event_key exists.");
             } catch(e) { console.error("[DB Migration Error] Creating event_key index:", e); }
-
-            // Add other indexes
             try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pointslog_user ON points_log (guild_id, user_id);`); } catch(e) { console.error("[DB Migration Error] Creating user index:", e);}
             try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pointslog_category ON points_log (category);`); } catch(e) { console.error("[DB Migration Error] Creating category index:", e);}
-
             console.log("✅ [DB Migration] Schema migration checks complete.");
         } catch(e) { console.error("❌ [DB Migration Error] Outer migration block error:", e); }
     }
@@ -237,7 +229,6 @@ class PointsDatabase {
             });
             S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total > 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
             S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
-            // Note: lbSinceByCat prepared statement removed as it wasn't used correctly, fallback to dynamic query used in handler
             S.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
             S.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`);
             S.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
@@ -262,14 +253,12 @@ class PointsDatabase {
         }
     }
 
-    // --- (modifyPoints unchanged) ---
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
-      // Ensure user exists in points table
       this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
       const modAmount = Number(amount) || 0;
-      console.log(`[modifyPoints] Guild: ${guildId}, User: ${userId}, Cat: ${category}, Amount: ${amount}, ModAmount: ${modAmount}, Reason: ${reason}`);
+      // console.log(`[modifyPoints] Guild: ${guildId}, User: ${userId}, Cat: ${category}, Amount: ${amount}, ModAmount: ${modAmount}, Reason: ${reason}`); // Optional: Verbose
       if (modAmount === 0) {
-           console.log("[modifyPoints] ModAmount is 0, returning early.");
+           // console.log("[modifyPoints] ModAmount is 0, returning early."); // Optional: Verbose
            return [];
       }
 
@@ -277,46 +266,33 @@ class PointsDatabase {
       let logCategory = category;
       let targetCol = category;
 
-      if (EXERCISE_CATEGORIES.includes(category)) {
-          targetCol = 'exercise';
-      } else if (category === 'junk') {
+      if (EXERCISE_CATEGORIES.includes(category)) { targetCol = 'exercise'; }
+      else if (category === 'junk') {
           const userPoints = this.stmts.getUser.get(guildId, userId) || {};
           targetCol = ALL_POINT_COLUMNS.sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
-          console.log(`[modifyPoints] Junk deduction target column: ${targetCol}`);
+          // console.log(`[modifyPoints] Junk deduction target column: ${targetCol}`); // Optional: Verbose
       } else if (!safeCols.includes(category)) {
           console.warn(`[modifyPoints Warn] Unknown category '${category}', applying to total only via log.`);
           targetCol = null;
       }
 
       if (targetCol && safeCols.includes(targetCol)) {
-          const stmt = this.db.prepare(`
-            UPDATE points
-            SET ${targetCol} = MAX(0, ${targetCol} + @amt), -- Prevent negative category points
-                updated_at = strftime('%s','now')
-            WHERE guild_id = @gid AND user_id = @uid
-          `);
+          const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
           stmt.run({ amt: modAmount, gid: guildId, uid: userId });
-          console.log(`[modifyPoints DB] Updated ${targetCol} column by ${modAmount} for ${userId}`);
+          // console.log(`[modifyPoints DB] Updated ${targetCol} column by ${modAmount} for ${userId}`); // Optional: Verbose
       } else {
-           console.log(`[modifyPoints DB] No specific column updated for category ${category}.`);
+           // console.log(`[modifyPoints DB] No specific column updated for category ${category}.`); // Optional: Verbose
       }
 
-      // Recalculate total ensuring it's never negative
-      const recalc = this.db.prepare(`
-        UPDATE points
-        SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')})
-        WHERE guild_id = ? AND user_id = ?
-      `);
+      const recalc = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = ? AND user_id = ?`);
       recalc.run(guildId, userId);
-       console.log(`[modifyPoints DB] Recalculated total for ${userId}`);
+       // console.log(`[modifyPoints DB] Recalculated total for ${userId}`); // Optional: Verbose
 
       const keyData = `${guildId}:${userId}:${category}:${amount}:${reason || ''}:${notes || ''}:${Date.now()}`;
       const eventKey = crypto.createHash('sha256').update(keyData).digest('hex');
 
-      const info = this.stmts.logPoints.run(
-        guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey
-      );
-       console.log(`[modifyPoints DB] Logged transaction. Changes: ${info.changes}`);
+      const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
+       // console.log(`[modifyPoints DB] Logged transaction. Changes: ${info.changes}`); // Optional: Verbose
 
       if (modAmount > 0) {
         this.updateStreak(guildId, userId);
@@ -328,13 +304,12 @@ class PointsDatabase {
      updateStreak(guildId, userId) {
          try {
              const user = this.stmts.getUser.get(guildId, userId); if (!user) return;
-             const today = new Date().toISOString().slice(0,10);
-             if (user.last_activity_date === today) return; // Already active today
+             const today = new Date().toISOString().slice(0,10); if (user.last_activity_date === today) return;
              const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0,10);
              const currentStreak = (user.last_activity_date === yesterday) ? (user.current_streak || 0) + 1 : 1;
              const longestStreak = Math.max(user.longest_streak || 0, currentStreak);
              this.stmts.updateStreak.run({ guild_id: guildId, user_id: userId, current_streak: currentStreak, longest_streak: longestStreak, last_activity_date: today });
-             console.log(`[DB] Updated streak for ${userId}: Current=${currentStreak}, Longest=${longestStreak}`);
+             // console.log(`[DB] Updated streak for ${userId}: Current=${currentStreak}, Longest=${longestStreak}`); // Optional: Verbose
          } catch (e) { console.error(`[DB Error] Failed to update streak for ${userId}:`, e); }
      }
     checkCooldown({ guildId, userId, category }) { let k = category; if (EXERCISE_CATEGORIES.includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`[Cooldown Warn] Undefined cooldown category: ${k} (orig: ${category})`); return 0; } try {const r = this.stmts.getCooldown.get(guildId, userId, k); const n = Date.now(); const c = COOLDOWNS[k]; if (r && n - r.last_ms < c) return c - (n - r.last_ms); return 0; } catch(e){ console.error(`[DB Error] Failed checkCooldown ${guildId}/${userId}/${k}:`,e); return 0;}}
@@ -343,17 +318,13 @@ class PointsDatabase {
     close() { try {if (this.db) {this.db.close(); console.log("[DB] Database connection closed.");}} catch(e){console.error("[DB Error] Error closing DB:", e);}}
 }
 
-// --- (reconcileTotals logic slightly refined) ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
     const exerciseCase = EXERCISE_CATEGORIES.map(c => `'${c}'`).join(',');
     const categorySums = ALL_POINT_COLUMNS.map(col => {
-         if (col === 'exercise') {
-             return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`;
-         } else {
-             return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`;
-         }
+         if (col === 'exercise') { return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`; }
+         else { return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`; }
      }).join(',\n        ');
 
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categorySums} FROM points_log GROUP BY guild_id, user_id`).all();
@@ -363,26 +334,20 @@ function reconcileTotals(db) {
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
     const ensureUserStmt = db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`);
 
-    const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all(); // Reset only existing guilds in points table
+    const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all();
      console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
 
     const tx = db.transaction((guildsToReset, rowsFromLog) => {
       console.log(`[Reconcile] Starting transaction...`);
       let resetCount = 0;
-      for (const g of guildsToReset) {
-        resetStmt.run(g.guild_id);
-        resetCount++;
-      }
+      for (const g of guildsToReset) { resetStmt.run(g.guild_id); resetCount++; }
       console.log(`[Reconcile] Reset points table for ${resetCount} guilds.`);
-
       let upsertCount = 0;
       for (const row of rowsFromLog) {
-        ensureUserStmt.run(row.guild_id, row.user_id); // Ensure user row exists before update
+        ensureUserStmt.run(row.guild_id, row.user_id);
         const calculatedTotal = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0);
-        const upsertData = { guild_id: row.guild_id, user_id: row.user_id, total: Math.max(0, calculatedTotal) }; // Ensure total isn't negative
-        ALL_POINT_COLUMNS.forEach(col => {
-            upsertData[col] = Math.max(0, row[col] || 0); // Ensure individual categories aren't negative
-        });
+        const upsertData = { guild_id: row.guild_id, user_id: row.user_id, total: Math.max(0, calculatedTotal) };
+        ALL_POINT_COLUMNS.forEach(col => { upsertData[col] = Math.max(0, row[col] || 0); });
         upsertStmt.run(upsertData);
         upsertCount++;
       }
@@ -397,7 +362,7 @@ function reconcileTotals(db) {
   }
 }
 
-// --- (Utilities unchanged) ---
+// --- Utilities ---
 const formatNumber = (n) => (Math.round(n * 1000) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
 const getUserRank = (total) => RANKS.reduce((acc, rank) => total >= rank.min ? rank : acc, RANKS[0]);
@@ -408,72 +373,60 @@ function getPeriodStart(period = 'day') { const n=new Date(); n.setHours(0,0,0,0
 function createKeepAliveServer() { http.createServer((r,res)=>{res.writeHead(200,{'Content-Type':'text/plain'});res.end('OK');}).listen(process.env.PORT||3000,()=>console.log('✅ Keep-alive server running.'));}
 
 
-// --- (buildCommands unchanged) ---
-function buildCommands() { /* ... (contents unchanged) ... */
+// --- buildCommands ---
+function buildCommands() {
     const fixedPointCategories = Object.keys(POINTS);
     const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
     const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories ];
     const tableChoices = [
-        { name: 'Points (Summary)', value: 'points' },
-        { name: 'Points Log (History)', value: 'points_log' },
-        { name: 'Cooldowns', value: 'cooldowns' },
-        { name: 'Buddies', value: 'buddies' },
-        { name: 'Achievements', value: 'achievements' },
-        { name: 'Protein Log', value: 'protein_log' }
+        { name: 'Points (Summary)', value: 'points' }, { name: 'Points Log (History)', value: 'points_log' },
+        { name: 'Cooldowns', value: 'cooldowns' }, { name: 'Buddies', value: 'buddies' },
+        { name: 'Achievements', value: 'achievements' }, { name: 'Protein Log', value: 'protein_log' },
+        { name: 'Reminders', value: 'reminders' } // Added reminders table
     ];
+
     return [
         ...fixedPointCategories.map(name => new SlashCommandBuilder().setName(name).setDescription(`Log ${name} (+${POINTS[name]} pts)`)),
         new SlashCommandBuilder().setName('exercise').setDescription('💪 Log detailed exercise')
-            .addSubcommand(s=>s.setName('yoga').setDescription(`🧘 Yoga (+${POINTS.yoga} pts)`).addNumberOption(o=>o.setName('minutes').setRequired(true).setMinValue(1).setDescription('Minutes performed (for notes)')))
+            .addSubcommand(s=>s.setName('yoga').setDescription(`🧘 Yoga (+${POINTS.yoga} pts)`).addNumberOption(o=>o.setName('minutes').setRequired(true).setMinValue(1).setDescription('Mins')))
             .addSubcommand(s=>s.setName('reps').setDescription(`💪 Generic reps (${EXERCISE_RATES.per_rep} pts/rep)`).addNumberOption(o=>o.setName('count').setRequired(true).setMinValue(1).setDescription('Total reps')))
             .addSubcommand(s=>s.setName('dumbbells').setDescription(`🏋️ Dumbbells (${EXERCISE_RATES.per_rep} pts/rep)`).addNumberOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addNumberOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
             .addSubcommand(s=>s.setName('barbell').setDescription(`🏋️ Barbell (${EXERCISE_RATES.per_rep} pts/rep)`).addNumberOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addNumberOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
             .addSubcommand(s=>s.setName('pushup').setDescription(`💪 Pushups (${REP_RATES.pushup} pts/rep)`).addNumberOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addNumberOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
-            .addSubcommand(s=>s.setName('plank').setDescription(`🧱 Plank (${PLANK_RATE_PER_MIN} pt/min)`).addNumberOption(o=>o.setName('minutes').setRequired(true).setMinValue(PLANK_MIN_MIN).setDescription(`Minutes (min ${PLANK_MIN_MIN})`)))
+            .addSubcommand(s=>s.setName('plank').setDescription(`🧱 Plank (${PLANK_RATE_PER_MIN} pt/min)`).addNumberOption(o=>o.setName('minutes').setRequired(true).setMinValue(PLANK_MIN_MIN).setDescription(`Mins (min ${PLANK_MIN_MIN})`)))
             .addSubcommand(s=>s.setName('squat').setDescription(`🦵 Squats (${REP_RATES.squat} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
             .addSubcommand(s=>s.setName('kettlebell').setDescription(`🏋️ Kettlebell (${REP_RATES.kettlebell} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
             .addSubcommand(s=>s.setName('lunge').setDescription(`🦿 Lunges (${REP_RATES.lunge} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps'))),
         new SlashCommandBuilder().setName('protein').setDescription('🥩 Track protein')
             .addSubcommand(s=>s.setName('add_item').setDescription('Add by item').addStringOption(o=>o.setName('item').setRequired(true).setDescription('Food').addChoices(...Object.entries(PROTEIN_SOURCES).filter(([,v])=>v.unit==='item').map(([k,v])=>({name:v.name, value:k})))).addIntegerOption(o=>o.setName('quantity').setRequired(true).setMinValue(1).setDescription('Qty')))
             .addSubcommand(s=>s.setName('add_grams').setDescription('Add by weight').addStringOption(o=>o.setName('item').setRequired(true).setDescription('Food').addChoices(...Object.entries(PROTEIN_SOURCES).filter(([,v])=>v.unit==='gram').map(([k,v])=>({name:v.name, value:k})))).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(1).setDescription('Grams')))
-            .addSubcommand(s=>s.setName('log_direct').setDescription('Log exact amount').addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams protein')).addStringOption(o=>o.setName('source').setDescription('Source (optional)')))
-            .addSubcommand(s=>s.setName('total').setDescription("View today's protein").addUserOption(o=>o.setName('user').setDescription('View another user (optional)'))),
+            .addSubcommand(s=>s.setName('log_direct').setDescription('Log exact amount').addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams protein')).addStringOption(o=>o.setName('source').setDescription('Source (opt)')))
+            .addSubcommand(s=>s.setName('total').setDescription("View today's protein").addUserOption(o=>o.setName('user').setDescription('View another user (opt)'))),
         new SlashCommandBuilder().setName('walking').setDescription(`🚶 Log walking (${DISTANCE_RATES.walking} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging (${DISTANCE_RATES.jogging} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('running').setDescription(`💨 Log running (${DISTANCE_RATES.running} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
-        new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank')
-            .addUserOption(o => o.setName('user').setDescription('The user to view (defaults to yourself)')),
+        new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank').addUserOption(o => o.setName('user').setDescription('User to view (default: you)')),
         new SlashCommandBuilder().setName('leaderboard').setDescription('📊 Show All-Time leaderboard').addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
-        new SlashCommandBuilder().setName('leaderboard_period').setDescription('📅 Show periodic leaderboard').addStringOption(o=>o.setName('period').setRequired(true).setDescription('Period').addChoices({name:'Today',value:'day'},{name:'This Week',value:'week'},{name:'Month',value:'month'},{name:'Year',value:'year'})).addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
+        new SlashCommandBuilder().setName('leaderboard_period').setDescription('📅 Show periodic leaderboard').addStringOption(o=>o.setName('period').setRequired(true).setDescription('Period').addChoices({name:'Today',value:'day'},{name:'Week',value:'week'},{name:'Month',value:'month'},{name:'Year',value:'year'})).addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
         new SlashCommandBuilder().setName('junk').setDescription('🍕 Log junk food').addStringOption(o=>o.setName('item').setRequired(true).setDescription('Item').addChoices(...Object.entries(DEDUCTIONS).map(([k,{emoji,label}])=>({name:`${emoji} ${label}`,value:k})))),
-        new SlashCommandBuilder().setName('buddy').setDescription('👯 Set/view buddy').addUserOption(o=>o.setName('user').setDescription('User to set as buddy (leave blank to view)')),
+        new SlashCommandBuilder().setName('buddy').setDescription('👯 Set/view buddy').addUserOption(o=>o.setName('user').setDescription('User to set (blank to view)')),
         new SlashCommandBuilder().setName('nudge').setDescription('👉 Nudge user').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to nudge')).addStringOption(o=>o.setName('activity').setRequired(true).setDescription('Activity')),
-        new SlashCommandBuilder().setName('remind').setDescription('⏰ Set reminder').addStringOption(o=>o.setName('activity').setRequired(true).setDescription('Reminder')).addNumberOption(o=>o.setName('hours').setRequired(true).setMinValue(1).setDescription('Hours')),
+        new SlashCommandBuilder().setName('remind').setDescription('⏰ Set reminder').addStringOption(o=>o.setName('activity').setRequired(true).setDescription('Reminder')).addNumberOption(o=>o.setName('hours').setRequired(true).setMinValue(1).setDescription('Hours from now')),
         new SlashCommandBuilder().setName('admin').setDescription('🛠️ Admin').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-            .addSubcommand(s=>s.setName('award').setDescription('Award points').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to award')).addNumberOption(o=>o.setName('amount').setRequired(true).setDescription('Pts')).addStringOption(o=>o.setName('category').setRequired(true).setDescription('Category').addChoices(...adminCategoryChoices)).addStringOption(o=>o.setName('reason').setDescription('Reason')))
-            .addSubcommand(s=>s.setName('deduct').setDescription('Deduct points').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o=>o.setName('amount').setRequired(true).setDescription('Pts')).addStringOption(o=>o.setName('category').setRequired(true).setDescription('Category').addChoices(...adminCategoryChoices)).addStringOption(o=>o.setName('reason').setDescription('Reason')))
-            .addSubcommand(s=>s.setName('add_protein').setDescription('Add protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to add to')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
-            .addSubcommand(s=>s.setName('deduct_protein').setDescription('Deduct protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
-            .addSubcommand(s=>s.setName('clear_user_data').setDescription('🔥 Wipe ALL data for a user (IRREVERSIBLE)')
-                .addUserOption(o=>o.setName('user').setRequired(true).setDescription('The user to wipe'))
-                .addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type the word CONFIRM to approve this action'))
-            )
-            .addSubcommand(s=>s.setName('show_table').setDescription('🔒 Dumps the content of a database table (Top 30 rows)')
-                .addStringOption(o=>o.setName('table_name').setRequired(true).setDescription('The table to show').addChoices(...tableChoices))
-            ),
-        new SlashCommandBuilder()
-            .setName('recalculate')
-            .setDescription('🧮 Admin: Recalculate all totals from the log')
-            .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-        new SlashCommandBuilder()
-            .setName('db_download')
-            .setDescription('🔒 Admin: Download a copy of the database file.')
-            .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+            .addSubcommand(s=>s.setName('award').setDescription('Award points').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User')).addNumberOption(o=>o.setName('amount').setRequired(true).setDescription('Pts')).addStringOption(o=>o.setName('category').setRequired(true).setDescription('Category').addChoices(...adminCategoryChoices)).addStringOption(o=>o.setName('reason').setDescription('Reason')))
+            .addSubcommand(s=>s.setName('deduct').setDescription('Deduct points').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User')).addNumberOption(o=>o.setName('amount').setRequired(true).setDescription('Pts')).addStringOption(o=>o.setName('category').setRequired(true).setDescription('Category').addChoices(...adminCategoryChoices)).addStringOption(o=>o.setName('reason').setDescription('Reason')))
+            .addSubcommand(s=>s.setName('add_protein').setDescription('Add protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
+            .addSubcommand(s=>s.setName('deduct_protein').setDescription('Deduct protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
+            .addSubcommand(s=>s.setName('clear_user_data').setDescription('🔥 Wipe ALL data for a user').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User')).addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type CONFIRM')))
+            .addSubcommand(s=>s.setName('show_table').setDescription('🔒 Dumps table content (Top 30)').addStringOption(o=>o.setName('table_name').setRequired(true).setDescription('Table').addChoices(...tableChoices)))
+            .addSubcommand(s=>s.setName('download_all_tables').setDescription('🔒 Downloads all tables as JSON.')), // Added new subcommand
+        new SlashCommandBuilder().setName('recalculate').setDescription('🧮 Admin: Recalculate totals from log').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+        new SlashCommandBuilder().setName('db_download').setDescription('🔒 Admin: Download DB file.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     ].map(c => c.toJSON());
 }
 
-// --- (CommandHandler unchanged, includes clear_user_data fix) ---
-class CommandHandler { /* ... (contents unchanged, includes try/catch inside clear_user_data transaction) ... */
+// --- CommandHandler (includes handleDownloadAllTables) ---
+class CommandHandler { /* ... (constructor and other methods unchanged) ... */
     constructor(db) { this.db = db; }
 
     async handleClaim(interaction, category) {
@@ -482,13 +435,13 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
         const cooldownKey = category;
 
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
-        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${category}**: ${formatCooldown(remaining)}.` /* flags: Inherited */ });
+        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${category}**: ${formatCooldown(remaining)}.` });
 
         const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category, amount, reason: `claim:${category}` });
         this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
 
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        if (!userRow) return interaction.editReply({ content: 'Error updating score.' /* flags: Inherited */ });
+        if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
 
         const { cur, need } = nextRankProgress(userRow.total);
         let footerText = `PID: ${BOT_PROCESS_ID}`;
@@ -510,13 +463,13 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
         const amount = km * DISTANCE_RATES[activity];
         const cooldownKey = 'exercise';
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
-        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for exercises: ${formatCooldown(remaining)}.` /* flags: Inherited */ });
+        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for exercises: ${formatCooldown(remaining)}.` });
 
         const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: activity, amount, reason: `distance:${activity}`, notes: `${km}km` });
         this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
 
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        if (!userRow) return interaction.editReply({ content: 'Error updating score.' /* flags: Inherited */ });
+        if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
         const { cur, need } = nextRankProgress(userRow.total);
 
         let footerText = `PID: ${BOT_PROCESS_ID}`;
@@ -535,72 +488,43 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
     async handleExercise(interaction) {
         const { guild, user, options } = interaction;
         const subcommand = options.getSubcommand();
-        let amount = 0;
-        let description = '';
-        let cooldownCategory = 'exercise';
-        let logCategory = 'exercise';
-        let reasonPrefix = 'exercise';
-        let notes = '';
+        let amount = 0, description = '', cooldownCategory = 'exercise', logCategory = 'exercise', reasonPrefix = 'exercise', notes = '';
 
-        if (subcommand === 'yoga') {
-            cooldownCategory = 'yoga'; logCategory = 'yoga'; reasonPrefix = 'claim';
-        } else if (subcommand === 'plank') {
-            logCategory = 'plank'; reasonPrefix = 'time';
-        } else if (REP_RATES[subcommand]) {
-            logCategory = subcommand; reasonPrefix = 'reps';
-        }
+        if (subcommand === 'yoga') { cooldownCategory = 'yoga'; logCategory = 'yoga'; reasonPrefix = 'claim'; }
+        else if (subcommand === 'plank') { logCategory = 'plank'; reasonPrefix = 'time'; }
+        else if (REP_RATES[subcommand]) { logCategory = subcommand; reasonPrefix = 'reps'; }
 
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory });
-        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${subcommand}**: ${formatCooldown(remaining)}.` /* flags: Inherited */ });
+        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${subcommand}**: ${formatCooldown(remaining)}.` });
 
         switch (subcommand) {
-             case 'yoga': {
-                 const minutes = options.getNumber('minutes', true); amount = POINTS.yoga || 0; description = `${user.toString()} claimed **+${formatNumber(amount)}** pts for **Yoga**!`; notes = `${minutes} min`; break;
-             }
-             case 'plank': {
-                 const minutes = options.getNumber('minutes', true); amount = minutes * PLANK_RATE_PER_MIN; description = `${user.toString()} held a **plank** for **${formatNumber(minutes)} min** → **+${formatNumber(amount)}** pts!`; notes = `${minutes} min`; break;
-             }
-             case 'reps': {
-                 const count = options.getNumber('count', true); amount = count * EXERCISE_RATES.per_rep; description = `${user.toString()} logged **${count} total reps** → **+${formatNumber(amount)}** pts!`; notes = `${count} reps`; break;
-             }
-             case 'dumbbells': case 'barbell': case 'pushup':
-             case 'squat': case 'kettlebell': case 'lunge': {
-                 const repsInput = options.getInteger('reps', false);
-                 const setsInput = options.getInteger('sets', false);
-                 let totalReps;
-                 if (['squat', 'kettlebell', 'lunge'].includes(subcommand)) {
-                    totalReps = repsInput || options.getInteger('reps', true); notes = `${totalReps} reps`;
-                 } else {
-                    const reps = repsInput ?? 1; const sets = setsInput ?? 1; totalReps = reps * sets; notes = `${sets}x${reps} reps`;
-                 }
+             case 'yoga': { const minutes = options.getNumber('minutes', true); amount = POINTS.yoga || 0; description = `${user.toString()} claimed **+${formatNumber(amount)}** pts for **Yoga**!`; notes = `${minutes} min`; break; }
+             case 'plank': { const minutes = options.getNumber('minutes', true); amount = minutes * PLANK_RATE_PER_MIN; description = `${user.toString()} held **plank** for **${formatNumber(minutes)} min** → **+${formatNumber(amount)}** pts!`; notes = `${minutes} min`; break; }
+             case 'reps': { const count = options.getNumber('count', true); amount = count * EXERCISE_RATES.per_rep; description = `${user.toString()} logged **${count} total reps** → **+${formatNumber(amount)}** pts!`; notes = `${count} reps`; break; }
+             case 'dumbbells': case 'barbell': case 'pushup': case 'squat': case 'kettlebell': case 'lunge': {
+                 const repsInput = options.getInteger('reps', false); const setsInput = options.getInteger('sets', false); let totalReps;
+                 if (['squat', 'kettlebell', 'lunge'].includes(subcommand)) { totalReps = repsInput || options.getInteger('reps', true); notes = `${totalReps} reps`; }
+                 else { const reps = repsInput ?? 1; const sets = setsInput ?? 1; totalReps = reps * sets; notes = `${sets}x${reps} reps`; }
                  const rate = REP_RATES[subcommand] ?? EXERCISE_RATES.per_rep; amount = totalReps * rate; description = `${user.toString()} logged ${notes} **${subcommand}** → **+${formatNumber(amount)}** pts!`; break;
              }
         }
 
         const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: logCategory, amount, reason: `${reasonPrefix}:${subcommand}`, notes });
         this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory });
-
         const userRow = this.db.stmts.getUser.get(guild.id, user.id);
-        if (!userRow) return interaction.editReply({ content: 'Error updating score.' /* flags: Inherited */ });
+        if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
         const { cur, need } = nextRankProgress(userRow.total);
-
-        let footerText = `PID: ${BOT_PROCESS_ID}`;
-        if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
-
+        let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
         const embed = new EmbedBuilder().setColor(cur.color).setDescription(description).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
-
         const payload = { content: '', embeds:[embed] };
-        if (achievements.length) {
-             await interaction.editReply(payload);
-             return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] });
-        }
+        if (achievements.length) { await interaction.editReply(payload); return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); }
         return interaction.editReply(payload);
     }
 
     async handleProtein(interaction) {
         const { guild, user, options } = interaction; const subcommand = options.getSubcommand(); const targetUser = options.getUser('user') || user;
         if (subcommand === 'total') { const since = getPeriodStart('day'); const result = this.db.stmts.getDailyProtein.get(guild.id, targetUser.id, since); const totalProtein = result?.total || 0; const embed = new EmbedBuilder().setColor(0x5865F2).setTitle(`🥩 Daily Protein for ${targetUser.displayName}`).setDescription(`Logged **${formatNumber(totalProtein)}g** protein today.`).setThumbnail(targetUser.displayAvatarURL()).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }); return interaction.editReply({ content:'', embeds: [embed] }); }
-        let proteinGrams = 0; let itemName = '';
+        let proteinGrams = 0, itemName = '';
         if (subcommand === 'add_item') { const k = options.getString('item', true); const s = PROTEIN_SOURCES[k]; const q = options.getInteger('quantity', true); proteinGrams = s.protein_per_unit * q; itemName = `${q} ${s.name}`; }
         else if (subcommand === 'add_grams') { const k = options.getString('item', true); const s = PROTEIN_SOURCES[k]; const g = options.getNumber('grams', true); proteinGrams = s.protein_per_unit * g; itemName = `${g}g of ${s.name}`; }
         else if (subcommand === 'log_direct') { const g = options.getNumber('grams', true); const n = options.getString('source') || 'direct source'; proteinGrams = g; itemName = n; }
@@ -612,31 +536,27 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
 
     async handleJunk(interaction) {
         const { guild, user, options } = interaction; const item = options.getString('item', true); const deduction = DEDUCTIONS[item]; const msgs = ["Balance is key!", "One step back, two forward!", "Honesty is progress!", "Treats happen!", "Acknowledge and move on!"]; const msg = msgs[Math.floor(Math.random() * msgs.length)];
-        this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'junk', amount: -deduction.points, reason: `junk:${item}` }); const userRow = this.db.stmts.getUser.get(guild.id, user.id); const total = userRow ? userRow.total : 0;
+        this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'junk', amount: -deduction.points, reason: `junk:${item}` }); const userRow = this.db.stmts.getUser.get(guild.id, user.id); const total = userRow?.total || 0;
         const embed = new EmbedBuilder().setColor(0xED4245).setDescription(`${user.toString()} logged ${deduction.emoji} **${deduction.label}** (-**${formatNumber(deduction.points)}** pts).`).addFields({ name: "Total", value: `🏆 ${formatNumber(total)}` }).setFooter({ text: `${msg} | PID: ${BOT_PROCESS_ID}` });
         return interaction.editReply({ content:'', embeds: [embed] });
     }
 
     async handleMyScore(interaction) {
-        const { guild, options } = interaction;
-        const targetUser = options.getUser('user') || interaction.user;
+        const { guild, options } = interaction; const targetUser = options.getUser('user') || interaction.user;
         const userRow = this.db.stmts.getUser.get(guild.id, targetUser.id) || { total: 0, current_streak: 0 };
         const { pct, cur, need } = nextRankProgress(userRow.total);
         const ach = this.db.stmts.getUserAchievements.all(guild.id, targetUser.id).map(r => r.achievement_id);
         const embed = new EmbedBuilder().setColor(cur.color).setAuthor({ name: targetUser.displayName, iconURL: targetUser.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields({ name: 'Points', value: formatNumber(userRow.total), inline: true }, { name: 'Streak', value: `🔥 ${userRow.current_streak || 0}d`, inline: true }, { name: 'Progress', value: progressBar(pct), inline: false }, { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' });
-        let footerText = `PID: ${BOT_PROCESS_ID}`;
-        if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+        let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
         embed.setFooter({ text: footerText });
         return interaction.editReply({ content:'', embeds: [embed] });
     }
 
     async handleLeaderboard(interaction) {
-        const { guild, user, options } = interaction;
-        const cat = options.getString('category') || 'all';
-        try {
+        const { guild, user, options } = interaction; const cat = options.getString('category') || 'all';
+        try { /* ... (logic unchanged) ... */
             let rows = []; let subtitle = ''; let selfRank = null;
             subtitle = `All Time • ${cat === 'all' ? 'Total Points' : cat === 'streak' ? 'Current Streak' : cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-
             if (cat === 'streak') { rows = this.db.stmts.getTopStreaks.all(guild.id); }
             else if (cat === 'all') { rows = this.db.stmts.lbAllFromPoints.all(guild.id); const my = this.db.stmts.selfRankAllFromPoints.get(guild.id, user.id); if (my) selfRank = { userId: user.id, rank: my.rank, score: my.score }; }
             else {
@@ -652,7 +572,6 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
                      subtitle += " (from log)";
                  }
             }
-
             if (!rows.length) return interaction.editReply({ content: '📊 No data.' });
             rows = rows.map((r, i) => ({ ...r, rank: i+1 }));
             const userIds = rows.map(r => r.userId);
@@ -667,7 +586,7 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
 
     async handleLeaderboardPeriod(interaction) {
         const { guild, user, options } = interaction; const period = options.getString('period', true); const cat = options.getString('category') || 'all';
-        try {
+        try { /* ... (logic unchanged) ... */
             let rows = [];
             const { start, end } = getPeriodRange(period); const periodName = { day: 'Today', week: 'This Week', month:'This Month', year:'This Year' }[period]; const startStr = `<t:${start}:d>`; const endStr = `<t:${end}:d>`;
             let subtitle = `${periodName} (${startStr}-${endStr}) • ${cat === 'all' ? 'Total Net Points' : cat.charAt(0).toUpperCase() + cat.slice(1)}`;
@@ -689,15 +608,16 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
     }
 
     async handleBuddy(interaction) {
-        const { guild, user, options } = interaction; const targetUser = options.getUser('user'); if (!targetUser) { const b = this.db.stmts.getBuddy.get(guild.id, user.id); return interaction.editReply({ content: b?.buddy_id ? `Buddy: <@${b.buddy_id}>` : 'No buddy set!' }); } if (targetUser.id === user.id) return interaction.editReply({ content: 'Cannot be own buddy!', /* flags: Inherited */ }); this.db.stmts.setBuddy.run(guild.id, user.id, targetUser.id); return interaction.editReply({ content: `✨ ${user.toString()} set <@${targetUser.id}> as buddy!` });
+        const { guild, user, options } = interaction; const targetUser = options.getUser('user'); if (!targetUser) { const b = this.db.stmts.getBuddy.get(guild.id, user.id); return interaction.editReply({ content: b?.buddy_id ? `Buddy: <@${b.buddy_id}>` : 'No buddy set!' }); } if (targetUser.id === user.id) return interaction.editReply({ content: 'Cannot be own buddy!' }); this.db.stmts.setBuddy.run(guild.id, user.id, targetUser.id); return interaction.editReply({ content: `✨ ${user.toString()} set <@${targetUser.id}> as buddy!` });
     }
     async handleNudge(interaction) {
-        const { guild, user, options } = interaction; const targetUser = options.getUser('user', true); const activity = options.getString('activity', true); if (targetUser.bot || targetUser.id === user.id) return interaction.editReply({ content: "Cannot nudge bots/self.", /* flags: Inherited */ }); const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.ManageGuild); const buddy = this.db.stmts.getBuddy.get(guild.id, user.id); const isBuddy = buddy?.buddy_id === targetUser.id; if (!isAdmin && !isBuddy) return interaction.editReply({ content: "Can only nudge buddy (or ask admin).", /* flags: Inherited */ }); try { await targetUser.send(`⏰ <@${user.id}> from **${guild.name}** nudges: **${activity}**!`); return interaction.editReply({ content: `✅ Nudge sent to <@${targetUser.id}>.` }); } catch (err) { console.error(`Nudge DM Error for ${targetUser.id}:`, err); return interaction.editReply({ content: `❌ Could not DM user. They may have DMs disabled.` }); }
+        const { guild, user, options } = interaction; const targetUser = options.getUser('user', true); const activity = options.getString('activity', true); if (targetUser.bot || targetUser.id === user.id) return interaction.editReply({ content: "Cannot nudge bots/self." }); const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.ManageGuild); const buddy = this.db.stmts.getBuddy.get(guild.id, user.id); const isBuddy = buddy?.buddy_id === targetUser.id; if (!isAdmin && !isBuddy) return interaction.editReply({ content: "Can only nudge buddy (or ask admin)." }); try { await targetUser.send(`⏰ <@${user.id}> from **${guild.name}** nudges: **${activity}**!`); return interaction.editReply({ content: `✅ Nudge sent to <@${targetUser.id}>.` }); } catch (err) { console.error(`Nudge DM Error for ${targetUser.id}:`, err); return interaction.editReply({ content: `❌ Could not DM user. They may have DMs disabled.` }); }
     }
     async handleRemind(interaction) {
         const { guild, user, options } = interaction; const activity = options.getString('activity', true); const hours = options.getNumber('hours', true); const dueAt = Date.now() + hours * 3600000; this.db.stmts.addReminder.run(guild.id, user.id, activity, dueAt); return interaction.editReply({ content: `⏰ Reminder set for **${activity}** in ${hours}h.` });
     }
 
+    // Includes refined clear_user_data with internal try/catch and checkpoint
     async handleAdmin(interaction) {
         const { guild, user, options } = interaction; const sub = options.getSubcommand();
         const targetUser = options.getUser('user');
@@ -725,12 +645,12 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
                     console.log(`[Admin clear_user_data] WAL checkpoint successful after deleting data for ${targetUser.id}. Result:`, cpResult);
                 } catch (cpErr) {
                     console.error(`[Admin clear_user_data] Error during WAL checkpoint after deletion for ${targetUser.id}:`, cpErr);
-                    interaction.followUp({ content: '⚠️ Warning: Data cleared, but DB checkpoint failed. Leaderboard/myscore might be stale.', flags: [MessageFlags.Ephemeral] }).catch(e=>console.error("Failed followup:", e));
+                    interaction.followUp({ content: '⚠️ Warning: Data cleared, but database checkpoint failed. Leaderboard/myscore might be stale for a moment.', flags: [MessageFlags.Ephemeral] }).catch(e=>console.error("Failed followup:", e));
                 }
-                return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been permanently deleted.` /* flags: Inherited */ });
+                return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been permanently deleted.` });
             } catch (err) {
                 console.error(`[Admin clear_user_data] Error during clear data process for ${targetUser.id}:`, err);
-                return interaction.editReply({ content: `❌ An error occurred while trying to clear data. Check logs.` /* flags: Inherited */ });
+                return interaction.editReply({ content: `❌ An error occurred while trying to clear data. Check logs.` });
             }
         }
 
@@ -745,13 +665,19 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
                 const rows = this.db.db.prepare(`SELECT * FROM ${tableName} ${orderBy} LIMIT 30`).all();
                 if (rows.length === 0) { return interaction.editReply({ content: `✅ Table \`${tableName}\` is empty.`, flags: [MessageFlags.Ephemeral] }); }
                 const data = JSON.stringify(rows, null, 2);
-                 if (Buffer.byteLength(data, 'utf8') > 8 * 1024 * 1024) { return interaction.editReply({ content: `❌ Table data too large (> 8MB).`, flags: [MessageFlags.Ephemeral] }); }
+                 if (Buffer.byteLength(data, 'utf8') > 20 * 1024 * 1024) { return interaction.editReply({ content: `❌ Table data too large (> 20MB).`, flags: [MessageFlags.Ephemeral] }); }
                 const attachment = new AttachmentBuilder(Buffer.from(data), { name: `${tableName}_dump.json` });
                 return interaction.editReply({ content: `✅ Top/last 30 rows from \`${tableName}\`:`, files: [attachment], flags: [MessageFlags.Ephemeral] });
             } catch (err) { console.error(`Error showing table ${tableName}:`, err); return interaction.editReply({ content: `❌ Error fetching table data. Check logs.`, flags: [MessageFlags.Ephemeral] }); }
         }
 
-        if (!targetUser) return interaction.editReply({ content: `You must specify a user for this command.`, flags: [MessageFlags.Ephemeral] });
+        // --- NEW: Handle download_all_tables ---
+        if (sub === 'download_all_tables') {
+            return this.handleDownloadAllTables(interaction); // Call the dedicated handler
+        }
+        // ------------------------------------
+
+        if (!targetUser) return interaction.editReply({ content: `You must specify a user for the '${sub}' command.`, flags: [MessageFlags.Ephemeral] });
 
         if (sub === 'award' || sub === 'deduct') {
             const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt;
@@ -768,13 +694,63 @@ class CommandHandler { /* ... (contents unchanged, includes try/catch inside cle
         }
     }
 
+    async handleDownloadAllTables(interaction) {
+        console.log(`[Admin download_all_tables] Request received by ${interaction.user.tag}`);
+        const attachments = [];
+        let fileCount = 0;
+        const MAX_ATTACHMENTS = 10; // Discord limit
+
+        try {
+            const tables = this.db.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';`).all();
+            console.log(`[Admin download_all_tables] Found tables: ${tables.map(t => t.name).join(', ')}`);
+
+            for (const table of tables) {
+                if (fileCount >= MAX_ATTACHMENTS) {
+                    console.warn(`[Admin download_all_tables] Reached attachment limit (${MAX_ATTACHMENTS}). Skipping remaining tables.`);
+                    await interaction.followUp({ content: `⚠️ Reached attachment limit (${MAX_ATTACHMENTS}). Some tables skipped.`, flags: MessageFlags.Ephemeral }).catch(e=>console.error("Failed followup:",e));
+                    break;
+                }
+                const tableName = table.name;
+                console.log(`[Admin download_all_tables] Processing table: ${tableName}`);
+                try {
+                    const rows = this.db.db.prepare(`SELECT * FROM ${tableName}`).all();
+                    if (rows.length === 0) { console.log(`Table ${tableName} is empty. Skipping.`); continue; }
+                    const data = JSON.stringify(rows, null, 2);
+                    const buffer = Buffer.from(data);
+                     if (buffer.byteLength > 20 * 1024 * 1024) { // Check size
+                        console.warn(`Table ${tableName} data too large (> 20MB). Skipping.`);
+                        await interaction.followUp({ content: `⚠️ Data for table \`${tableName}\` too large (> 20MB). Skipped.`, flags: MessageFlags.Ephemeral }).catch(()=>{});
+                        continue;
+                     }
+                    attachments.push(new AttachmentBuilder(buffer, { name: `${tableName}.json` }));
+                    fileCount++;
+                    console.log(`Prepared attachment for ${tableName} (${rows.length} rows).`);
+                } catch (tableErr) {
+                    console.error(`Error fetching table ${tableName}:`, tableErr);
+                    await interaction.followUp({ content: `❌ Error fetching table \`${tableName}\`. Check logs.`, flags: MessageFlags.Ephemeral }).catch(()=>{});
+                }
+            } // End for
+
+            if (attachments.length > 0) {
+                await interaction.editReply({ content: `✅ Data tables (up to ${MAX_ATTACHMENTS}):`, files: attachments /* flags: Inherited */ });
+                console.log(`[Admin download_all_tables] Sent ${attachments.length} table dumps.`);
+            } else {
+                await interaction.editReply({ content: '✅ No data found/all tables skipped.' /* flags: Inherited */ });
+                console.log(`[Admin download_all_tables] No attachments sent.`);
+            }
+        } catch (err) {
+            console.error('❌ [Admin download_all_tables] General error:', err);
+            await interaction.editReply({ content: '❌ Unexpected error preparing table downloads.' }).catch(()=>{});
+        }
+    } // End handleDownloadAllTables
+
     async handleDbDownload(interaction) {
         const dbPath = CONFIG.dbFile;
         try {
-            if (!fs.existsSync(dbPath)) { return interaction.editReply({ content: '❌ Database file not found.', flags: [MessageFlags.Ephemeral] }); }
+            if (!fs.existsSync(dbPath)) { return interaction.editReply({ content: '❌ Database file not found.', /* flags: Inherited */ }); }
             const attachment = new AttachmentBuilder(dbPath, { name: 'points.db' });
-            await interaction.editReply({ content: '✅ DB Backup:', files: [attachment], flags: [MessageFlags.Ephemeral] });
-        } catch (err) { console.error("Error sending DB file:", err); await interaction.editReply({ content: '❌ Could not send DB file.', flags: [MessageFlags.Ephemeral] }).catch(()=>{}); }
+            await interaction.editReply({ content: '✅ DB Backup:', files: [attachment] /* flags: Inherited */ });
+        } catch (err) { console.error("Error sending DB file:", err); await interaction.editReply({ content: '❌ Could not send DB file.' }).catch(()=>{}); }
     }
 } // End CommandHandler
 
@@ -787,23 +763,22 @@ async function main() {
     createKeepAliveServer();
     if (!CONFIG.token || !CONFIG.appId) { console.error('[Startup Error] Missing DISCORD_TOKEN or APPLICATION_ID env vars!'); process.exit(1); }
 
-    let database; // Define database variable in broader scope
+    let database;
     try {
         console.log("[Startup] Initializing database...");
-        database = new PointsDatabase(CONFIG.dbFile); // Assign here
+        database = new PointsDatabase(CONFIG.dbFile);
     } catch (e) {
         console.error("❌ [Startup FATAL] Failed to initialize Database class:", e);
         process.exit(1);
     }
 
-
     console.log("[Startup] Starting initial data reconciliation...");
-    reconcileTotals(database.db); // Pass the db instance
+    reconcileTotals(database.db);
     console.log("[Startup] Finished reconcileTotals function call.");
 
     try {
         console.log("[Startup] Attempting WAL checkpoint...");
-        const checkpointResult = database.db.pragma('wal_checkpoint(FULL)'); // Use the db instance
+        const checkpointResult = database.db.pragma('wal_checkpoint(FULL)');
         console.log("[Startup] WAL Checkpoint Result:", checkpointResult);
         if (checkpointResult?.[0]?.checkpointed > -1) {
              console.log(`✅ [Startup] Database checkpoint successful (${checkpointResult[0].checkpointed} pages).`);
@@ -815,7 +790,7 @@ async function main() {
     }
 
     console.log("[Startup] Initializing CommandHandler...");
-    const handler = new CommandHandler(database); // Pass the PointsDatabase instance
+    const handler = new CommandHandler(database);
 
     console.log("[Startup] Initializing REST client and registering commands...");
     const rest = new REST({ version: '10' }).setToken(CONFIG.token);
@@ -823,7 +798,7 @@ async function main() {
         const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId);
         await rest.put(route, { body: buildCommands() });
         console.log('✅ [Startup] Registered application commands.');
-    } catch (err) { /* ... (error handling unchanged) ... */
+    } catch (err) {
         console.error('❌ [Startup Error] Command registration failed:', err);
         if (err.rawError) console.error('Validation Errors:', JSON.stringify(err.rawError, null, 2));
         else if (err.errors) console.error('Validation Errors:', JSON.stringify(err.errors, null, 2));
@@ -838,7 +813,7 @@ async function main() {
         console.log("[Startup] Setting isBotReady = true");
         isBotReady = true;
 
-        setInterval(async () => { /* ... (reminder logic unchanged) ... */
+        setInterval(async () => {
              if (!isBotReady) return;
              try {
                  const now = Date.now();
@@ -847,61 +822,38 @@ async function main() {
                      try {
                          const u = await client.users.fetch(r.user_id);
                          await u.send(`⏰ Reminder: **${r.activity}**!`);
-                          // console.log(`Sent reminder ID ${r.id} to user ${r.user_id}`); // Verbose
                      } catch (e) {
-                         // Avoid logging if it's just "Cannot send messages to this user"
-                         if (e.code !== 50007) {
-                            console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`);
-                         }
+                         if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); }
                      } finally {
                          database.stmts.deleteReminder.run(r.id);
                      }
                  }
-             } catch (e) {
-                 console.error("❌ [Reminder Error] Error checking reminders:", e);
-             }
+             } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); }
          }, 60000);
     });
 
-    // --- InteractionCreate Handler with Timing Logs ---
+    // --- InteractionCreate Handler ---
     client.on('interactionCreate', async (interaction) => {
         const receivedTime = Date.now();
-        // console.log(`[Interaction] Received /${interaction.commandName} at ${receivedTime}`); // Optional: Verbose
 
         if (!isBotReady) { /* ... (readiness check unchanged) ... */
-            console.log(`[Interaction] Received command /${interaction.commandName} while bot not ready. Replying with wait message.`);
-             try {
-                if (!interaction.replied && !interaction.deferred) {
-                     await interaction.reply({ content: "⏳ Bot is still starting up, please wait a moment and try again.", flags: MessageFlags.Ephemeral });
-                }
-            } catch (e) {
-                 console.error("[Interaction Error] Could not send 'not ready' reply:", e);
-            }
-            return;
+             try { if (!interaction.replied && !interaction.deferred) { await interaction.reply({ content: "⏳ Bot starting...", flags: MessageFlags.Ephemeral }); } } catch (e) { console.error("Could not send 'not ready' reply:", e); } return;
         }
-
         if (!interaction.isChatInputCommand() || !interaction.guild) return;
 
         let initialReplySuccessful = false;
-
         try {
             // Determine ephemeral status
-            const ephemeralCommands = ['buddy', 'nudge', 'remind', 'admin', 'myscore'];
-            let shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
+            let shouldBeEphemeral = ['buddy', 'nudge', 'remind', 'admin', 'myscore', 'recalculate', 'db_download'].includes(interaction.commandName);
             if (interaction.commandName === 'admin' && interaction.options.getSubcommand() === 'show_table') shouldBeEphemeral = true;
+            if (interaction.commandName === 'admin' && interaction.options.getSubcommand() === 'download_all_tables') shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
             if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false;
-            if (interaction.commandName === 'recalculate') shouldBeEphemeral = true;
-            if (interaction.commandName === 'db_download') shouldBeEphemeral = true;
 
             // Attempt immediate reply
-            const replyStartTime = Date.now();
-            // console.log(`[Interaction] Attempting reply for /${interaction.commandName} (Ephemeral: ${shouldBeEphemeral}) at ${replyStartTime} (Delay: ${replyStartTime - receivedTime}ms)`); // Optional: Verbose
             await interaction.reply({ content: '🔄 Processing...', flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined });
-            const replyEndTime = Date.now();
-            // console.log(`[Interaction] Reply successful for /${interaction.commandName} at ${replyEndTime} (Reply took: ${replyEndTime - replyStartTime}ms)`); // Optional: Verbose
             initialReplySuccessful = true;
 
             // Process command
@@ -921,7 +873,15 @@ async function main() {
                     case 'buddy': await handler.handleBuddy(interaction); break;
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
-                    case 'admin': await handler.handleAdmin(interaction); break;
+                    case 'admin':
+                        // Route admin subcommands
+                        if (interaction.options.getSubcommand() === 'download_all_tables') {
+                             console.log("[Command] Admin triggered /admin download_all_tables");
+                             await handler.handleDownloadAllTables(interaction);
+                        } else {
+                             await handler.handleAdmin(interaction); // Handles other admin subs
+                        }
+                        break;
                     case 'recalculate':
                         console.log("[Command] Admin triggered /recalculate");
                         reconcileTotals(database.db);
@@ -938,8 +898,6 @@ async function main() {
                         await interaction.editReply({ content: "Unknown command."});
                 }
             }
-             // console.log(`[Interaction] Successfully processed command: /${interaction.commandName} for ${interaction.user.tag}`); // Optional: Verbose
-
         } catch (err) {
             const errorTime = Date.now();
             console.error(`❌ [Interaction Error] Cmd Error for /${interaction.commandName} by ${interaction.user.tag} at ${errorTime} (Total time: ${errorTime - receivedTime}ms):`, err);
@@ -948,53 +906,41 @@ async function main() {
                  console.error("❌ [Interaction Error] CRITICAL: Initial acknowledgement failed (Unknown Interaction). Cannot proceed or reply.");
                 return;
             }
-
-            const errorReply = { content: `❌ Error processing command. Please check the bot logs or contact the administrator.`};
+            const errorReply = { content: `❌ Error processing command. Please check logs.`};
             const errorReplyEphemeral = { ...errorReply, flags: [MessageFlags.Ephemeral]};
-
             try {
-                if (initialReplySuccessful) { // If initial reply worked, try editing it
+                if (initialReplySuccessful) {
                     await interaction.editReply(errorReply).catch(editErr => {
-                        console.error("❌ [Interaction Error] Failed to editReply with error message:", editErr);
-                        // If edit fails (e.g., original reply deleted), try followup
-                        interaction.followUp(errorReplyEphemeral).catch(followUpErr => {
-                             console.error("❌ [Interaction Error] Failed to followUp error message after editReply failed:", followUpErr);
-                        });
+                        console.error("❌ [Interaction Error] Failed to editReply with error msg:", editErr);
+                        interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ [Interaction Error] Failed followup after edit fail:", followUpErr); });
                     });
-                } else { // If initial reply failed (but not 10062), try followup
-                     console.warn("[Interaction Warning] Initial reply failed, but error was not 10062. Attempting error followup.");
-                     interaction.followUp(errorReplyEphemeral).catch(followUpErr => {
-                         console.error("❌ [Interaction Error] Failed to followUp error message after non-10062 initial reply failure:", followUpErr);
-                    });
+                } else {
+                     console.warn("[Interaction Warning] Initial reply failed (not 10062). Attempting error followup.");
+                     interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ [Interaction Error] Failed followup after non-10062 initial fail:", followUpErr); });
                 }
-            }
-            catch (e) {
-                console.error("❌ [Interaction Error] CRITICAL: Error occurred while trying to send an error reply via edit/followUp:", e);
-            }
+            } catch (e) { console.error("❌ [Interaction Error] CRITICAL: Error sending error reply:", e); }
         }
-    }); // End of client.on('interactionCreate')
+    }); // End interactionCreate
 
     // --- Graceful Shutdown Logic ---
-    const shutdown = (signal) => { /* ... (contents unchanged) ... */
-        console.log(`[Shutdown] Received ${signal}. Shutting down gracefully...`);
-        isBotReady = false; // Stop accepting new commands immediately
+    const shutdown = (signal) => {
+        console.log(`[Shutdown] Received ${signal}. Shutting down...`);
+        isBotReady = false;
         console.log('[Shutdown] Destroying Discord client...');
-        client?.destroy(); // Use optional chaining in case client init failed
-
-        // Add a small delay to allow Discord logout before closing DB
+        client?.destroy();
         setTimeout(() => {
-            console.log('[Shutdown] Closing database connection...');
-            database?.close(); // Use optional chaining
-            console.log("[Shutdown] Exiting process.");
+            console.log('[Shutdown] Closing database...');
+            database?.close();
+            console.log("[Shutdown] Exiting.");
             process.exit(0);
-        }, 1500); // Wait 1.5 seconds
+        }, 1500);
     };
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
 
     console.log("[Startup] Attempting client login...");
     await client.login(CONFIG.token);
-    console.log("[Startup] client.login() promise resolved. Waiting for 'clientReady' event...");
+    console.log("[Startup] client.login() resolved. Waiting for 'clientReady'...");
 }
 
 main().catch(err => {
