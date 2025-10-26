@@ -40,15 +40,15 @@ const PROTEIN_SOURCES = {
     greek_yogurt:   { name: 'Greek Yogurt', unit: 'gram', protein_per_unit: 0.10 },
     cottage_cheese: { name: 'Cottage Cheese', unit: 'gram', protein_per_unit: 0.11 },
     milk:           { name: 'Milk (Dairy)', unit: 'gram', protein_per_unit: 0.034 },
-    tofu:        { name: 'Tofu (Firm)', unit: 'gram', protein_per_unit: 0.08 },
-    edamame:     { name: 'Edamame (Shelled)', unit: 'gram', protein_per_unit: 0.11 },
-    lentils:     { name: 'Lentils (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
-    dahl:        { name: 'Dahl (Cooked Lentils)', unit: 'gram', protein_per_unit: 0.09 },
-    chickpeas:   { name: 'Chickpeas (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
+    tofu:       { name: 'Tofu (Firm)', unit: 'gram', protein_per_unit: 0.08 },
+    edamame:    { name: 'Edamame (Shelled)', unit: 'gram', protein_per_unit: 0.11 },
+    lentils:    { name: 'Lentils (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
+    dahl:       { name: 'Dahl (Cooked Lentils)', unit: 'gram', protein_per_unit: 0.09 },
+    chickpeas:  { name: 'Chickpeas (Cooked)', unit: 'gram', protein_per_unit: 0.09 },
     black_beans: { name: 'Black Beans (Cooked)', unit: 'gram', protein_per_unit: 0.08 },
-    quinoa:      { name: 'Quinoa (Cooked)', unit: 'gram', protein_per_unit: 0.04 },
-    almonds:     { name: 'Almonds', unit: 'gram', protein_per_unit: 0.21 },
-    peanuts:     { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 },
+    quinoa:     { name: 'Quinoa (Cooked)', unit: 'gram', protein_per_unit: 0.04 },
+    almonds:    { name: 'Almonds', unit: 'gram', protein_per_unit: 0.21 },
+    peanuts:    { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 },
     protein_powder: { name: 'Protein Powder', unit: 'gram', protein_per_unit: 0.80 }
 };
 
@@ -160,25 +160,25 @@ class PointsDatabase {
             }
             // **PATCH: Add event_key to points_log for idempotency**
            // **PATCH: Add event_key to points_log for idempotency**
- try { 
- // Step 1: Add the column, allowing NULLs (which is what failed before)
- this.db.exec(`ALTER TABLE points_log ADD COLUMN event_key TEXT;`); 
- } 
- catch (e) { 
- // Ignore "duplicate column" error if it already exists
- if (!e.message.includes("duplicate column")) {
- console.error("Migration error adding event_key column:", e); 
- }
- }
- 
- try {
- // Step 2: Create a UNIQUE index on the column.
- // This is the safe way to add uniqueness to an existing table.
-// It's made partial (WHERE NOT NULL) to allow multiple NULL entries.
- this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;`);
- } catch(e) {
- console.error("Migration error creating event_key index:", e);
- }
+            try { 
+                // Step 1: Add the column, allowing NULLs (which is what failed before)
+                this.db.exec(`ALTER TABLE points_log ADD COLUMN event_key TEXT;`); 
+            } 
+            catch (e) { 
+                // Ignore "duplicate column" error if it already exists
+                if (!e.message.includes("duplicate column")) {
+                    console.error("Migration error adding event_key column:", e); 
+                }
+            }
+            
+            try {
+                // Step 2: Create a UNIQUE index on the column.
+                // This is the safe way to add uniqueness to an existing table.
+                // It's made partial (WHERE NOT NULL) to allow multiple NULL entries.
+                this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;`);
+            } catch(e) {
+                console.error("Migration error creating event_key index:", e);
+            }
             // **PATCH: Add indexes**
             try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pointslog_user ON points_log (guild_id, user_id);`); } catch(e) {}
             try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pointslog_category ON points_log (category);`); } catch(e) {}
@@ -209,7 +209,7 @@ class PointsDatabase {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, 
             amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT,
-            event_key TEXT UNIQUE -- Prevents duplicate entries
+            event_key TEXT -- Prevents duplicate entries
             -- Removed FOREIGN KEY constraint as it can cause issues with clearing users
           ); 
           
@@ -218,6 +218,7 @@ class PointsDatabase {
           CREATE TABLE IF NOT EXISTS reminders ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER ); 
           CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts); 
           CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC); 
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;
           CREATE TABLE IF NOT EXISTS protein_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, item_name TEXT NOT NULL, protein_grams REAL NOT NULL, timestamp INTEGER NOT NULL );
         `); 
     }
@@ -234,7 +235,7 @@ class PointsDatabase {
         S.logPoints = this.db.prepare(`
           INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(event_key) DO NOTHING
+          ON CONFLICT(event_key) WHERE event_key IS NOT NULL DO NOTHING
         `);
 
         S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total > 0 ORDER BY total DESC LIMIT 10`);
@@ -589,8 +590,8 @@ class CommandHandler {
                  amount = POINTS.yoga || 0; 
                  description = `${user.toString()} claimed **+${formatNumber(amount)}** pts for **Yoga**!`; 
                  notes = `${minutes} min`; 
-                break; 
-            }
+                 break; 
+             }
              case 'plank': { 
                  const minutes = options.getNumber('minutes', true); 
                  amount = minutes * PLANK_RATE_PER_MIN; 
@@ -598,24 +599,24 @@ class CommandHandler {
                  notes = `${minutes} min`; 
                  break; 
              }
-            case 'reps': { 
-                const count = options.getNumber('count', true); 
-                amount = count * EXERCISE_RATES.per_rep; 
-                description = `${user.toString()} logged **${count} total reps** → **+${formatNumber(amount)}** pts!`; 
-                notes = `${count} reps`; 
-                break; 
-            }
-            case 'dumbbells': case 'barbell': case 'pushup':
+             case 'reps': { 
+                 const count = options.getNumber('count', true); 
+                 amount = count * EXERCISE_RATES.per_rep; 
+                 description = `${user.toString()} logged **${count} total reps** → **+${formatNumber(amount)}** pts!`; 
+                 notes = `${count} reps`; 
+                 break; 
+             }
+             case 'dumbbells': case 'barbell': case 'pushup':
              case 'squat': case 'kettlebell': case 'lunge': { 
-                const reps = options.getInteger('reps', true);
-                const sets = options.getInteger('sets', true);
-                const totalReps = reps * sets; 
-                const rate = REP_RATES[subcommand] ?? EXERCISE_RATES.per_rep; 
-                amount = totalReps * rate; 
-                description = `${user.toString()} logged ${sets}x${reps} (${totalReps}) **${subcommand}** → **+${formatNumber(amount)}** pts!`; 
-                notes = `${sets}x${reps} reps`; 
-                break; 
-            }
+                 const reps = options.getInteger('reps', true);
+                 const sets = options.getInteger('sets', true);
+                 const totalReps = reps * sets; 
+                 const rate = REP_RATES[subcommand] ?? EXERCISE_RATES.per_rep; 
+                 amount = totalReps * rate; 
+                 description = `${user.toString()} logged ${sets}x${reps} (${totalReps}) **${subcommand}** → **+${formatNumber(amount)}** pts!`; 
+                 notes = `${sets}x${reps} reps`; 
+                 break; 
+             }
         }
         
         const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: logCategory, amount, reason: `${reasonPrefix}:${subcommand}`, notes });
@@ -778,7 +779,7 @@ class CommandHandler {
             const amt = options.getNumber('amount', true); 
             const cat = options.getString('category', true); 
             const rsn = options.getString('reason') || `Admin action`; 
-            const finalAmt = sub === 'award' ? amt : -finalAmt; 
+            const finalAmt = sub === 'award' ? amt : -amt; // Fixed logic error here
             
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
             
@@ -889,8 +890,8 @@ async function main() {
                         await handler.handleDbDownload(interaction);
                         break;
                     default:
-                         console.warn(`Unhandled: ${commandName}`);
-                         await interaction.editReply({ content: "Unknown command.", flags: [MessageFlags.Ephemeral] });
+                        console.warn(`Unhandled: ${commandName}`);
+                        await interaction.editReply({ content: "Unknown command.", flags: [MessageFlags.Ephemeral] });
                 }
             }
         } catch (err) {
@@ -898,9 +899,9 @@ async function main() {
             const errorReply = { content: `❌ Error processing command.`, flags: [MessageFlags.Ephemeral] };
             try { 
                 if (interaction.replied || interaction.deferred) {
-                     await interaction.editReply(errorReply);
+                    await interaction.editReply(errorReply);
                 } else {
-                     await interaction.reply(errorReply);
+                    await interaction.reply(errorReply);
                 }
             } 
             catch (e) { console.error("Error sending error reply:", e); }
