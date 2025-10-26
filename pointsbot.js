@@ -1,4 +1,4 @@
-// pointsbot.js - Final Version (with /myscore @user and PID Diagnostic)
+// pointsbot.js - Final Corrected Version
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -11,8 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// ADDED: Process ID for diagnostics
-const BOT_PROCESS_ID = process.pid; 
+const BOT_PROCESS_ID = process.pid; // For diagnostics
 
 /* =========================
     CONFIG & CONSTANTS
@@ -58,7 +57,7 @@ const COOLDOWNS = {
     cricket: 12 * 60 * 60 * 1000,
     swimming: 12 * 60 * 60 * 1000,
     yoga: 12 * 60 * 60 * 1000,
-    exercise: 30 * 60 * 1000,
+    exercise: 30 * 60 * 1000, // Shared for distance/reps/plank
     cooking: 60 * 60 * 1000,
     sweeping: 60 * 60 * 1000,
     gardening: 60 * 60 * 1000,
@@ -72,7 +71,7 @@ const POINTS = {
     badminton: 5,
     cricket: 5,
     swimming: 3,
-    yoga: 2,
+    yoga: 2, // Yoga points are fixed
     cooking: 2,
     sweeping: 2,
     gardening: 2,
@@ -85,9 +84,10 @@ const EXERCISE_RATES = { per_rep: 0.002 };
 const DISTANCE_RATES = { walking: 0.5, jogging: 0.6, running: 0.7 };
 const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
 const PLANK_RATE_PER_MIN = 1;
-const PLANK_MIN_MIN = 0.75;
+const PLANK_MIN_MIN = 0.75; // 45s
 
 const DEDUCTIONS = {
+    // 25 items total
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
     fries: { points: 3, emoji: '🍟', label: 'Fries' },
     soda: { points: 2, emoji: '🥤', label: 'Soda / Soft Drink' },
@@ -173,7 +173,32 @@ class PointsDatabase {
         this.stmts = S;
     }
     
-    modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) { this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId }); const modAmount = Number(amount) || 0; if (modAmount === 0) return []; let targetCategoryForPointsTable = category; if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(category)) targetCategoryForPointsTable = 'exercise'; else if (modAmount < 0 && category === 'junk') { const userPoints = this.stmts.getUser.get(guildId, userId) || {}; targetCategoryForPointsTable = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise'; } else if (!['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga'].includes(category)) targetCategoryForPointsTable = 'total'; this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategoryForPointsTable, add: modAmount }); this.stmts.logPoints.run(guildId, userId, category, modAmount, Math.floor(Date.now() / 1000), reason, notes); if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); } return []; }
+    modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) { 
+        this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId }); 
+        const modAmount = Number(amount) || 0; 
+        if (modAmount === 0) return []; 
+        let targetCategoryForPointsTable = category; 
+        
+        if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(category)) {
+            targetCategoryForPointsTable = 'exercise';
+        } else if (modAmount < 0 && category === 'junk') { 
+            const userPoints = this.stmts.getUser.get(guildId, userId) || {}; 
+            targetCategoryForPointsTable = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise'; 
+        } 
+        // **FIX:** If admin deducts, targetCategoryForPointsTable is already correct (e.g., 'gym')
+        // We only change to 'total' if it's NOT a junk deduct AND NOT a recognized column. (e.g. chores)
+        else if (modAmount > 0 && !['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga'].includes(category)) {
+             targetCategoryForPointsTable = 'total'; // Chores, etc. only affect total in 'points' table
+        }
+        
+        this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategoryForPointsTable, add: modAmount }); 
+        this.stmts.logPoints.run(guildId, userId, category, modAmount, Math.floor(Date.now() / 1000), reason, notes); 
+        if (modAmount > 0) { 
+            this.updateStreak(guildId, userId); 
+            return this.checkAchievements(guildId, userId); 
+        } 
+        return []; 
+    }
     updateStreak(guildId, userId) { const user = this.stmts.getUser.get(guildId, userId); if (!user) return; const today = new Date().toISOString().slice(0,10); if (user.last_activity_date === today) return; const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0,10); const currentStreak = (user.last_activity_date === yesterday) ? (user.current_streak || 0) + 1 : 1; const longestStreak = Math.max(user.longest_streak || 0, currentStreak); this.stmts.updateStreak.run({ guild_id: guildId, user_id: userId, current_streak: currentStreak, longest_streak: longestStreak, last_activity_date: today }); }
     checkCooldown({ guildId, userId, category }) { let k = category; if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`Cooldown undef: ${k} (orig: ${category})`); return 0; } const r = this.stmts.getCooldown.get(guildId, userId, k); const n = Date.now(); const c = COOLDOWNS[k]; if (r && n - r.last_ms < c) return c - (n - r.last_ms); return 0; }
     commitCooldown({ guildId, userId, category }) { let k = category; if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`Commit CD undef: ${k} (orig: ${category})`); return; } this.stmts.setCooldown.run({ guild_id: guildId, user_id: userId, category: k, last_ms: Date.now() }); }
@@ -185,14 +210,11 @@ class PointsDatabase {
 function reconcileTotals(db) {
   try {
     console.log("🔄 Reconciling totals from points_log...");
-    // Get all net totals from the log
     const totals = db.prepare(`
       SELECT guild_id, user_id, SUM(amount) as total
-      FROM points_log
-      GROUP BY guild_id, user_id
+      FROM points_log GROUP BY guild_id, user_id
     `).all();
 
-    // Prepare statement to update the points table
     const upsert = db.prepare(`
       INSERT INTO points (guild_id, user_id, total)
       VALUES (@guild_id, @user_id, @total)
@@ -200,22 +222,15 @@ function reconcileTotals(db) {
       DO UPDATE SET total = excluded.total
     `);
 
-    // Run this in a transaction for speed and safety
     const tx = db.transaction(rows => {
         for (const row of rows) {
-            // Ensure user exists in points table first (for other columns)
             db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`).run(row.guild_id, row.user_id);
-            // Now run the update
             upsert.run(row);
         }
     });
-    
     tx(totals);
-
     console.log(`✅ Reconciled ${totals.length} user totals.`);
-  } catch (err) {
-    console.error("❌ Reconciliation error:", err);
-  }
+  } catch (err) { console.error("❌ Reconciliation error:", err); }
 }
 
 /* =========================
@@ -262,7 +277,7 @@ function buildCommands() {
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging (${DISTANCE_RATES.jogging} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('running').setDescription(`💨 Log running (${DISTANCE_RATES.running} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         
-        // MODIFIED: Added user option
+        // **MODIFIED:** Added user option
         new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank')
             .addUserOption(o => o.setName('user').setDescription('The user to view (defaults to yourself)')),
 
@@ -279,7 +294,6 @@ function buildCommands() {
             .addSubcommand(s=>s.setName('add_protein').setDescription('Add protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to add to')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason')))
             .addSubcommand(s=>s.setName('deduct_protein').setDescription('Deduct protein').addUserOption(o=>o.setName('user').setRequired(true).setDescription('User to deduct from')).addNumberOption(o=>o.setName('grams').setRequired(true).setMinValue(0.1).setDescription('Grams')).addStringOption(o=>o.setName('reason').setDescription('Reason'))),
         
-        // ADDED: Recalculate command
         new SlashCommandBuilder()
             .setName('recalculate')
             .setDescription('🧮 Admin: Recalculate all totals from the log')
@@ -396,8 +410,8 @@ class CommandHandler {
             }
             case 'dumbbells': case 'barbell': case 'pushup':
              case 'squat': case 'kettlebell': case 'lunge': { 
-                const reps = options.getNumber('reps', true); 
-                const sets = options.getNumber('sets', true);
+                const reps = options.getInteger('reps', true); // Changed to getInteger to match command
+                const sets = options.getInteger('sets', true); // Changed to getInteger
                 const totalReps = reps * sets; 
                 const rate = REP_RATES[subcommand] ?? EXERCISE_RATES.per_rep; 
                 amount = totalReps * rate; 
@@ -449,30 +463,16 @@ class CommandHandler {
     }
 
     async handleMyScore(interaction) { 
-        // MODIFIED: Added user option
         const { guild, options } = interaction; 
-        const targetUser = options.getUser('user') || interaction.user; // Get target or self
-        
+        const targetUser = options.getUser('user') || interaction.user; 
         const userRow = this.db.stmts.getUser.get(guild.id, targetUser.id) || { total: 0, current_streak: 0 }; 
         const { pct, cur, need } = nextRankProgress(userRow.total); 
         const ach = this.db.stmts.getUserAchievements.all(guild.id, targetUser.id).map(r => r.achievement_id);
-        
-        const embed = new EmbedBuilder()
-            .setColor(cur.color)
-            .setAuthor({ name: targetUser.displayName, iconURL: targetUser.displayAvatarURL() }) // Use target's info
-            .setTitle(`Rank: ${cur.name}`)
-            .addFields(
-                { name: 'Points', value: formatNumber(userRow.total), inline: true }, 
-                { name: 'Streak', value: `🔥 ${userRow.current_streak || 0}d`, inline: true }, 
-                { name: 'Progress', value: progressBar(pct), inline: false }, 
-                { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' }
-            );
-        
+        const embed = new EmbedBuilder().setColor(cur.color).setAuthor({ name: targetUser.displayName, iconURL: targetUser.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields({ name: 'Points', value: formatNumber(userRow.total), inline: true }, { name: 'Streak', value: `🔥 ${userRow.current_streak || 0}d`, inline: true }, { name: 'Progress', value: progressBar(pct), inline: false }, { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' });
         let footerText = `PID: ${BOT_PROCESS_ID}`;
         if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
         embed.setFooter({ text: footerText });
-        
-        return interaction.editReply({ embeds: [embed] }); // Ephemeral handled by main
+        return interaction.editReply({ embeds: [embed] }); 
     }
 
     // Handles All-Time leaderboard (/leaderboard) - Uses points table
@@ -515,7 +515,7 @@ class CommandHandler {
             
             let footerText = `PID: ${BOT_PROCESS_ID}`;
             if (cat === 'all' && selfRank && !rows.some(r => r.userId === user.id)) footerText = `Your Rank: #${selfRank.rank} (${formatNumber(selfRank.score)} pts) | ${footerText}`;
-            
+
             const embed = new EmbedBuilder().setTitle(`🏆 Leaderboard: ${subtitle}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp().setFooter({ text: footerText });
             return interaction.editReply({ embeds: [embed] }); 
         } catch (e) { console.error('LB Error:', e); return interaction.editReply({ content: '❌ Error generating leaderboard.' }); }
@@ -554,10 +554,31 @@ class CommandHandler {
     async handleRemind(interaction) { 
         const { guild, user, options } = interaction; const activity = options.getString('activity', true); const hours = options.getNumber('hours', true); const dueAt = Date.now() + hours * 3600000; this.db.stmts.addReminder.run(guild.id, user.id, activity, dueAt); return interaction.editReply({ content: `⏰ Reminder set for **${activity}** in ${hours}h.` }); 
     }
+    
+    // **FIXED:** Admin deduct now correctly uses the specified category
     async handleAdmin(interaction) { 
         const { guild, user, options } = interaction; const sub = options.getSubcommand(); const targetUser = options.getUser('user', true);
-        if (sub === 'award' || sub === 'deduct') { const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt; const logCat = sub === 'deduct' ? 'junk' : cat; this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: logCat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); const act = sub === 'award' ? 'Awarded' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); }
-        if (sub === 'add_protein' || sub === 'deduct_protein') { let g = options.getNumber('grams', true); const rsn = options.getString('reason') || `Admin action`; if (sub === 'deduct_protein') g = -g; this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); const act = sub === 'add_protein' ? 'Added' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); }
+        if (sub === 'award' || sub === 'deduct') { 
+            const amt = options.getNumber('amount', true); 
+            const cat = options.getString('category', true); 
+            const rsn = options.getString('reason') || `Admin action`; 
+            const finalAmt = sub === 'award' ? amt : -amt; 
+            
+            // **FIX:** Log with the category the admin specified, not 'junk'
+            const logCat = cat; 
+            
+            this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: logCat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
+            const act = sub === 'award' ? 'Awarded' : 'Deducted'; 
+            return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); 
+        }
+        if (sub === 'add_protein' || sub === 'deduct_protein') { 
+            let g = options.getNumber('grams', true); 
+            const rsn = options.getString('reason') || `Admin action`; 
+            if (sub === 'deduct_protein') g = -g; 
+            this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); 
+            const act = sub === 'add_protein' ? 'Added' : 'Deducted'; 
+            return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); 
+        }
     }
 } // End CommandHandler
 
@@ -602,6 +623,7 @@ async function main() {
             let shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
+            if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false; // Make viewing others' score public
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false; 
             if (interaction.commandName === 'recalculate') shouldBeEphemeral = true;
 
@@ -620,16 +642,15 @@ async function main() {
                     case 'junk': await handler.handleJunk(interaction); break;
                     case 'myscore': await handler.handleMyScore(interaction); break;
                     case 'leaderboard': await handler.handleLeaderboard(interaction); break;
-                    case 'leaderboard_period': await handler.handleLeaderboardPeriod(interaction); break; 
+                    case 'leaderboard_period': await handler.handleLeaderScore(interaction); break; 
                     case 'buddy': await handler.handleBuddy(interaction); break;
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
                     case 'admin': await handler.handleAdmin(interaction); break;
-                    // **ADDED:** Handle recalculate command
                     case 'recalculate':
-                        await interaction.editReply({ content: '🔄 Recalculating totals... this may take a moment.'});
-                        reconcileTotals(database.db); // Pass the raw db connection
-                        await interaction.editReply({ content: `✅ Totals recalculated successfully! | PID: ${BOT_PROCESS_ID}` });
+                        await interaction.editReply({ content: '🔄 Recalculating totals...'});
+                        reconcileTotals(database.db); 
+                        await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` });
                         break;
                     default:
                          console.warn(`Unhandled: ${commandName}`);
