@@ -1,4 +1,4 @@
-// pointsbot.js - Final Corrected Version
+// pointsbot.js - Final Corrected Version (with full reconciliation)
 import 'dotenv/config';
 import http from 'node:http';
 import {
@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BOT_PROCESS_ID = process.pid; // For diagnostics
+const BOT_PROCESS_ID = process.pid; 
 
 /* =========================
     CONFIG & CONSTANTS
@@ -57,7 +57,7 @@ const COOLDOWNS = {
     cricket: 12 * 60 * 60 * 1000,
     swimming: 12 * 60 * 60 * 1000,
     yoga: 12 * 60 * 60 * 1000,
-    exercise: 30 * 60 * 1000, // Shared for distance/reps/plank
+    exercise: 30 * 60 * 1000, 
     cooking: 60 * 60 * 1000,
     sweeping: 60 * 60 * 1000,
     gardening: 60 * 60 * 1000,
@@ -71,7 +71,7 @@ const POINTS = {
     badminton: 5,
     cricket: 5,
     swimming: 3,
-    yoga: 2, // Yoga points are fixed
+    yoga: 2, 
     cooking: 2,
     sweeping: 2,
     gardening: 2,
@@ -84,10 +84,9 @@ const EXERCISE_RATES = { per_rep: 0.002 };
 const DISTANCE_RATES = { walking: 0.5, jogging: 0.6, running: 0.7 };
 const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
 const PLANK_RATE_PER_MIN = 1;
-const PLANK_MIN_MIN = 0.75; // 45s
+const PLANK_MIN_MIN = 0.75; 
 
 const DEDUCTIONS = {
-    // 25 items total
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' },
     fries: { points: 3, emoji: '🍟', label: 'Fries' },
     soda: { points: 2, emoji: '🥤', label: 'Soda / Soft Drink' },
@@ -134,6 +133,9 @@ const ACHIEVEMENTS = [
     { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' },
 ];
 
+// Exercise group categories for aggregation
+const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
+
 /* =========================
     DATABASE CLASS
 ========================= */
@@ -144,12 +146,15 @@ class PointsDatabase {
     prepareStatements() {
         const S = this.stmts = {};
         S.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
-        S.addPoints = this.db.prepare(`UPDATE points SET total = total + @add, gym = CASE WHEN @category = 'gym' THEN gym + @add ELSE gym END, badminton = CASE WHEN @category = 'badminton' THEN badminton + @add ELSE badminton END, cricket = CASE WHEN @category = 'cricket' THEN cricket + @add ELSE cricket END, exercise = CASE WHEN @category IN ('exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup') THEN exercise + @add ELSE exercise END, swimming = CASE WHEN @category = 'swimming' THEN swimming + @add ELSE swimming END, yoga = CASE WHEN @category = 'yoga' THEN yoga + @add ELSE yoga END, updated_at = strftime('%s', 'now') WHERE guild_id = @guild_id AND user_id = @user_id`);
+        // This query ONLY updates the 'points' table. It is the "cache".
+        S.addPoints = this.db.prepare(`UPDATE points SET total = total + @add, gym = gym + @addGym, badminton = badminton + @addBadminton, cricket = cricket + @addCricket, exercise = exercise + @addExercise, swimming = swimming + @addSwimming, yoga = yoga + @addYoga, updated_at = strftime('%s', 'now') WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
         S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
         S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
         S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+        
+        // Leaderboard queries read from 'points' table for consistency
         S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total > 0 ORDER BY total DESC LIMIT 10`);
         S.lbAllCatFromPoints_gym = this.db.prepare(`SELECT user_id as userId, gym as score FROM points WHERE guild_id=? AND gym > 0 ORDER BY gym DESC LIMIT 10`);
         S.lbAllCatFromPoints_badminton = this.db.prepare(`SELECT user_id as userId, badminton as score FROM points WHERE guild_id=? AND badminton > 0 ORDER BY badminton DESC LIMIT 10`);
@@ -158,8 +163,11 @@ class PointsDatabase {
         S.lbAllCatFromPoints_swimming = this.db.prepare(`SELECT user_id as userId, swimming as score FROM points WHERE guild_id=? AND swimming > 0 ORDER BY swimming DESC LIMIT 10`);
         S.lbAllCatFromPoints_yoga = this.db.prepare(`SELECT user_id as userId, yoga as score FROM points WHERE guild_id=? AND yoga > 0 ORDER BY yoga DESC LIMIT 10`);
         S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total > 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
+        
+        // Periodic queries MUST use points_log
         S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
         S.lbSinceByCat = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 AND category IN (?) GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
+        
         S.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
         S.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`);
         S.setBuddy = this.db.prepare(`INSERT INTO buddies (guild_id, user_id, buddy_id) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET buddy_id = excluded.buddy_id`);
@@ -173,26 +181,51 @@ class PointsDatabase {
         this.stmts = S;
     }
     
+    // **MODIFIED:** This function now correctly updates all columns in the 'points' table
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) { 
         this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId }); 
         const modAmount = Number(amount) || 0; 
         if (modAmount === 0) return []; 
-        let targetCategoryForPointsTable = category; 
         
-        if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(category)) {
-            targetCategoryForPointsTable = 'exercise';
-        } else if (modAmount < 0 && category === 'junk') { 
-            const userPoints = this.stmts.getUser.get(guildId, userId) || {}; 
-            targetCategoryForPointsTable = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise'; 
-        } 
-        // **FIX:** If admin deducts, targetCategoryForPointsTable is already correct (e.g., 'gym')
-        // We only change to 'total' if it's NOT a junk deduct AND NOT a recognized column. (e.g. chores)
-        else if (modAmount > 0 && !['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga'].includes(category)) {
-             targetCategoryForPointsTable = 'total'; // Chores, etc. only affect total in 'points' table
+        // This object matches the @parameters in the S.addPoints query
+        const params = {
+            guild_id: guildId,
+            user_id: userId,
+            add: modAmount, // Always update total
+            addGym: 0,
+            addBadminton: 0,
+            addCricket: 0,
+            addExercise: 0,
+            addSwimming: 0,
+            addYoga: 0,
+        };
+
+        // Assign the amount to the correct category parameter
+        if (category === 'gym') params.addGym = modAmount;
+        else if (category === 'badminton') params.addBadminton = modAmount;
+        else if (category === 'cricket') params.addCricket = modAmount;
+        else if (EXERCISE_CATEGORIES.includes(category)) params.addExercise = modAmount;
+        else if (category === 'swimming') params.addSwimming = modAmount;
+        else if (category === 'yoga') params.addYoga = modAmount;
+        else if (category === 'junk') {
+            // For junk, find the highest category to deduct from
+            const userPoints = this.stmts.getUser.get(guildId, userId) || {};
+            const targetCategory = ['exercise', 'gym', 'badminton', 'cricket', 'swimming', 'yoga'].sort((a, b) => (userPoints[b] || 0) - (userPoints[a] || 0))[0] || 'exercise';
+            
+            if (targetCategory === 'gym') params.addGym = modAmount;
+            else if (targetCategory === 'badminton') params.addBadminton = modAmount;
+            else if (targetCategory === 'cricket') params.addCricket = modAmount;
+            else if (targetCategory === 'exercise') params.addExercise = modAmount;
+            else if (targetCategory === 'swimming') params.addSwimming = modAmount;
+            else if (targetCategory === 'yoga') params.addYoga = modAmount;
         }
-        
-        this.stmts.addPoints.run({ guild_id: guildId, user_id: userId, category: targetCategoryForPointsTable, add: modAmount }); 
+        // Chores (cooking, etc.) only affect the 'total' (params.add), so no extra 'else if' is needed.
+
+        // Run the update on the 'points' summary table
+        this.stmts.addPoints.run(params); 
+        // Log the original event to the 'points_log'
         this.stmts.logPoints.run(guildId, userId, category, modAmount, Math.floor(Date.now() / 1000), reason, notes); 
+        
         if (modAmount > 0) { 
             this.updateStreak(guildId, userId); 
             return this.checkAchievements(guildId, userId); 
@@ -200,37 +233,72 @@ class PointsDatabase {
         return []; 
     }
     updateStreak(guildId, userId) { const user = this.stmts.getUser.get(guildId, userId); if (!user) return; const today = new Date().toISOString().slice(0,10); if (user.last_activity_date === today) return; const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0,10); const currentStreak = (user.last_activity_date === yesterday) ? (user.current_streak || 0) + 1 : 1; const longestStreak = Math.max(user.longest_streak || 0, currentStreak); this.stmts.updateStreak.run({ guild_id: guildId, user_id: userId, current_streak: currentStreak, longest_streak: longestStreak, last_activity_date: today }); }
-    checkCooldown({ guildId, userId, category }) { let k = category; if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`Cooldown undef: ${k} (orig: ${category})`); return 0; } const r = this.stmts.getCooldown.get(guildId, userId, k); const n = Date.now(); const c = COOLDOWNS[k]; if (r && n - r.last_ms < c) return c - (n - r.last_ms); return 0; }
-    commitCooldown({ guildId, userId, category }) { let k = category; if (['walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'].includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`Commit CD undef: ${k} (orig: ${category})`); return; } this.stmts.setCooldown.run({ guild_id: guildId, user_id: userId, category: k, last_ms: Date.now() }); }
+    checkCooldown({ guildId, userId, category }) { let k = category; if (EXERCISE_CATEGORIES.includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`Cooldown undef: ${k} (orig: ${category})`); return 0; } const r = this.stmts.getCooldown.get(guildId, userId, k); const n = Date.now(); const c = COOLDOWNS[k]; if (r && n - r.last_ms < c) return c - (n - r.last_ms); return 0; }
+    commitCooldown({ guildId, userId, category }) { let k = category; if (EXERCISE_CATEGORIES.includes(k)) k = 'exercise'; if (!COOLDOWNS[k]) { console.warn(`Commit CD undef: ${k} (orig: ${category})`); return; } this.stmts.setCooldown.run({ guild_id: guildId, user_id: userId, category: k, last_ms: Date.now() }); }
     checkAchievements(guildId, userId) { const s = this.stmts.getUser.get(guildId, userId); if (!s) return []; const u = this.stmts.getUserAchievements.all(guildId, userId).map(r => r.achievement_id); const f = []; for (const a of ACHIEVEMENTS) { if (!u.includes(a.id) && a.requirement(s)) { this.stmts.unlockAchievement.run(guildId, userId, a.id); f.push(a); } } return f; }
     close() { this.db.close(); }
 }
 
-// --- Auto-Reconciliation on Startup ---
+// **MODIFIED:** This function now recalculates ALL columns, not just total.
 function reconcileTotals(db) {
   try {
-    console.log("🔄 Reconciling totals from points_log...");
-    const totals = db.prepare(`
-      SELECT guild_id, user_id, SUM(amount) as total
-      FROM points_log GROUP BY guild_id, user_id
-    `).all();
+    console.log("🔄 Reconciling all totals from points_log...");
+    
+    // 1. Calculate all category totals from the log
+    const logTotals = db.prepare(`
+      SELECT
+        guild_id,
+        user_id,
+        SUM(amount) as total,
+        SUM(CASE WHEN category = 'gym' THEN amount ELSE 0 END) as gym,
+        SUM(CASE WHEN category = 'badminton' THEN amount ELSE 0 END) as badminton,
+        SUM(CASE WHEN category = 'cricket' THEN amount ELSE 0 END) as cricket,
+        SUM(CASE WHEN category IN (${EXERCISE_CATEGORIES.map(() => '?').join(',')}) THEN amount ELSE 0 END) as exercise,
+        SUM(CASE WHEN category = 'swimming' THEN amount ELSE 0 END) as swimming,
+        SUM(CASE WHEN category = 'yoga' THEN amount ELSE 0 END) as yoga
+      FROM points_log
+      GROUP BY guild_id, user_id
+    `).all(...EXERCISE_CATEGORIES);
 
+    // 2. Prepare statements to reset and update the points table
+    const reset = db.prepare(`
+      UPDATE points SET 
+      total = 0, gym = 0, badminton = 0, cricket = 0, 
+      exercise = 0, swimming = 0, yoga = 0 
+      WHERE guild_id = ?
+    `);
     const upsert = db.prepare(`
-      INSERT INTO points (guild_id, user_id, total)
-      VALUES (@guild_id, @user_id, @total)
+      INSERT INTO points (guild_id, user_id, total, gym, badminton, cricket, exercise, swimming, yoga)
+      VALUES (@guild_id, @user_id, @total, @gym, @badminton, @cricket, @exercise, @swimming, @yoga)
       ON CONFLICT(guild_id, user_id)
-      DO UPDATE SET total = excluded.total
+      DO UPDATE SET
+        total = excluded.total, gym = excluded.gym, badminton = excluded.badminton,
+        cricket = excluded.cricket, exercise = excluded.exercise,
+        swimming = excluded.swimming, yoga = excluded.yoga,
+        updated_at = strftime('%s','now')
     `);
 
-    const tx = db.transaction(rows => {
-        for (const row of rows) {
-            db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`).run(row.guild_id, row.user_id);
-            upsert.run(row);
-        }
+    // 3. Get all unique guild IDs from the logs
+    const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points_log`).all();
+
+    // 4. Run the reconciliation in a single transaction
+    const tx = db.transaction((guilds, rows) => {
+      // Reset all points for all affected guilds first
+      for (const g of guilds) {
+        reset.run(g.guild_id);
+      }
+      // Upsert the new, correct totals
+      for (const row of rows) {
+        upsert.run(row);
+      }
     });
-    tx(totals);
-    console.log(`✅ Reconciled ${totals.length} user totals.`);
-  } catch (err) { console.error("❌ Reconciliation error:", err); }
+    
+    tx(guilds, logTotals);
+
+    console.log(`✅ Reconciled ${logTotals.length} user totals across all categories.`);
+  } catch (err) {
+    console.error("❌ Reconciliation error:", err);
+  }
 }
 
 /* =========================
@@ -277,9 +345,8 @@ function buildCommands() {
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging (${DISTANCE_RATES.jogging} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('running').setDescription(`💨 Log running (${DISTANCE_RATES.running} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         
-        // **MODIFIED:** Added user option
         new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank')
-            .addUserOption(o => o.setName('user').setDescription('The user to view (defaults to yourself)')),
+            .addUserOption(o => o.setName('user').setDescription('The user to view (defaults to yourself)')), // Added user option
 
         new SlashCommandBuilder().setName('leaderboard').setDescription('📊 Show All-Time leaderboard').addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
         new SlashCommandBuilder().setName('leaderboard_period').setDescription('📅 Show periodic leaderboard').addStringOption(o=>o.setName('period').setRequired(true).setDescription('Period').addChoices({name:'Today',value:'day'},{name:'This Week',value:'week'},{name:'Month',value:'month'},{name:'Year',value:'year'})).addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
@@ -410,8 +477,8 @@ class CommandHandler {
             }
             case 'dumbbells': case 'barbell': case 'pushup':
              case 'squat': case 'kettlebell': case 'lunge': { 
-                const reps = options.getInteger('reps', true); // Changed to getInteger to match command
-                const sets = options.getInteger('sets', true); // Changed to getInteger
+                const reps = options.getInteger('reps', true);
+                const sets = options.getInteger('sets', true);
                 const totalReps = reps * sets; 
                 const rate = REP_RATES[subcommand] ?? EXERCISE_RATES.per_rep; 
                 amount = totalReps * rate; 
@@ -481,7 +548,6 @@ class CommandHandler {
         const cat = options.getString('category') || 'all'; 
         try {
             let rows = []; let subtitle = ''; let selfRank = null;
-            const exerciseCategories = ['exercise','walking','jogging','running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup']; 
             subtitle = `All Time • ${cat === 'all' ? 'Total Points' : cat === 'streak' ? 'Current Streak' : cat.charAt(0).toUpperCase() + cat.slice(1)}`;
 
             if (cat === 'streak') { 
@@ -495,7 +561,7 @@ class CommandHandler {
                  if (this.db.stmts[catQueryKey]) { 
                      rows = this.db.stmts[catQueryKey].all(guild.id); 
                  } else { 
-                     let queryCategory = cat; if (cat === 'exercise') queryCategory = exerciseCategories;
+                     let queryCategory = cat; if (cat === 'exercise') queryCategory = EXERCISE_CATEGORIES;
                      const placeholders = Array.isArray(queryCategory) ? queryCategory.map(() => '?').join(',') : '?';
                      const query = `
                          SELECT user_id as userId, SUM(amount) AS score FROM points_log
@@ -503,7 +569,7 @@ class CommandHandler {
                          GROUP BY user_id HAVING score>0 ORDER BY score DESC LIMIT 10`;
                      const params = Array.isArray(queryCategory) ? [guild.id, ...queryCategory] : [guild.id, queryCategory];
                      rows = this.db.db.prepare(query).all(...params);
-                     if (!exerciseCategories.includes(cat)) subtitle += " (from log)"; 
+                     if (!EXERCISE_CATEGORIES.includes(cat)) subtitle += " (from log)"; 
                  }
             }
 
@@ -515,7 +581,7 @@ class CommandHandler {
             
             let footerText = `PID: ${BOT_PROCESS_ID}`;
             if (cat === 'all' && selfRank && !rows.some(r => r.userId === user.id)) footerText = `Your Rank: #${selfRank.rank} (${formatNumber(selfRank.score)} pts) | ${footerText}`;
-
+            
             const embed = new EmbedBuilder().setTitle(`🏆 Leaderboard: ${subtitle}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp().setFooter({ text: footerText });
             return interaction.editReply({ embeds: [embed] }); 
         } catch (e) { console.error('LB Error:', e); return interaction.editReply({ content: '❌ Error generating leaderboard.' }); }
@@ -525,12 +591,12 @@ class CommandHandler {
     async handleLeaderboardPeriod(interaction) { 
         const { guild, user, options } = interaction; const period = options.getString('period', true); const cat = options.getString('category') || 'all';
         try {
-            let rows = []; const exerciseCategories = ['exercise','walking','jogging','running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
+            let rows = []; 
             const { start, end } = getPeriodRange(period); const periodName = { day: 'Today', week: 'This Week', month:'This Month', year:'This Year' }[period]; const startStr = `<t:${start}:d>`; const endStr = `<t:${end}:d>`;
             let subtitle = `${periodName} (${startStr}-${endStr}) • ${cat === 'all' ? 'Total Net Points' : cat.charAt(0).toUpperCase() + cat.slice(1)}`;
             if (cat === 'streak') return interaction.editReply({ content: '📊 Streak LB only All-Time.' }); 
             else {
-                 let queryCategory = cat; if (cat === 'exercise') queryCategory = exerciseCategories;
+                 let queryCategory = cat; if (cat === 'exercise') queryCategory = EXERCISE_CATEGORIES;
                  const placeholders = Array.isArray(queryCategory) ? queryCategory.map(() => '?').join(',') : '?'; let query = ''; let params = [];
                  if (cat === 'all') { query = `SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`; params = [guild.id, start, end]; } 
                  else { query = `SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 AND category IN (${placeholders}) GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`; params = Array.isArray(queryCategory) ? [guild.id, start, end, ...queryCategory] : [guild.id, start, end, queryCategory]; }
@@ -564,7 +630,7 @@ class CommandHandler {
             const rsn = options.getString('reason') || `Admin action`; 
             const finalAmt = sub === 'award' ? amt : -amt; 
             
-            // **FIX:** Log with the category the admin specified, not 'junk'
+            // **FIX:** Log with the category the admin specified (e.g., 'gym'), not 'junk'
             const logCat = cat; 
             
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: logCat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
@@ -623,7 +689,8 @@ async function main() {
             let shouldBeEphemeral = ephemeralCommands.includes(interaction.commandName);
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
-            if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false; // Make viewing others' score public
+            // **FIX:** Make /myscore public if viewing another user
+            if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false; 
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false; 
             if (interaction.commandName === 'recalculate') shouldBeEphemeral = true;
 
@@ -642,7 +709,7 @@ async function main() {
                     case 'junk': await handler.handleJunk(interaction); break;
                     case 'myscore': await handler.handleMyScore(interaction); break;
                     case 'leaderboard': await handler.handleLeaderboard(interaction); break;
-                    case 'leaderboard_period': await handler.handleLeaderScore(interaction); break; 
+                    case 'leaderboard_period': await handler.handleLeaderboardPeriod(interaction); break; 
                     case 'buddy': await handler.handleBuddy(interaction); break;
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
