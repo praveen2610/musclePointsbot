@@ -1,6 +1,7 @@
 // pointsbot.js - Final Version (with User's modifyPoints Patch & Clear Data)
 import 'dotenv/config';
 import http from 'node:http';
+import crypto from 'node:crypto'; // Added for event_key hash
 import {
     Client, GatewayIntentBits, REST, Routes,
     SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits, MessageFlags
@@ -136,6 +137,8 @@ const ACHIEVEMENTS = [
 
 const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
 const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','carwash','dishwashing'];
+// All columns in the 'points' table that hold point values
+const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES];
 
 /* =========================
     DATABASE CLASS
@@ -147,14 +150,21 @@ class PointsDatabase {
         this.db.pragma('journal_mode = WAL'); 
         this.db.pragma('foreign_keys = ON'); 
         
-        // **PATCH 1: Auto-migrate chore columns**
+        // **PATCH: Auto-migrate chore columns**
         try {
             console.log("🔄 Migrating database schema (if needed)...");
             const cols = CHORE_CATEGORIES;
             for (const c of cols) {
                 try { this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); }
-                catch (e) { if (!e.message.includes("duplicate column")) console.error(e); } // ignore if exists
+                catch (e) { if (!e.message.includes("duplicate column")) console.error(e); } 
             }
+            // **PATCH: Add event_key to points_log for idempotency**
+            try { this.db.exec(`ALTER TABLE points_log ADD COLUMN event_key TEXT UNIQUE;`); } 
+            catch (e) { if (!e.message.includes("duplicate column")) console.error(e); }
+            // **PATCH: Add indexes**
+            try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pointslog_user ON points_log (guild_id, user_id);`); } catch(e) {}
+            try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_pointslog_category ON points_log (category);`); } catch(e) {}
+
             console.log("✅ Schema migration complete.");
         } catch(e) { console.error("Migration error:", e); }
 
@@ -163,7 +173,6 @@ class PointsDatabase {
     }
 
     initSchema() { 
-        // Schema now includes chore columns
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS points (
             guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, 
@@ -176,7 +185,16 @@ class PointsDatabase {
             PRIMARY KEY (guild_id, user_id)
           ); 
           CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) ); 
-          CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT ); 
+          
+          -- **PATCH: Updated points_log schema**
+          CREATE TABLE IF NOT EXISTS points_log ( 
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, 
+            amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT,
+            event_key TEXT UNIQUE -- Prevents duplicate entries
+            -- Removed FOREIGN KEY constraint as it can cause issues with clearing users
+          ); 
+          
           CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) ); 
           CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) ); 
           CREATE TABLE IF NOT EXISTS reminders ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER ); 
@@ -193,7 +211,14 @@ class PointsDatabase {
         S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
         S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
         S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
-        S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+        
+        // **PATCH: Updated logPoints statement for event_key**
+        S.logPoints = this.db.prepare(`
+          INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(event_key) DO NOTHING
+        `);
+
         S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total > 0 ORDER BY total DESC LIMIT 10`);
         S.lbAllCatFromPoints_gym = this.db.prepare(`SELECT user_id as userId, gym as score FROM points WHERE guild_id=? AND gym > 0 ORDER BY gym DESC LIMIT 10`);
         S.lbAllCatFromPoints_badminton = this.db.prepare(`SELECT user_id as userId, badminton as score FROM points WHERE guild_id=? AND badminton > 0 ORDER BY badminton DESC LIMIT 10`);
@@ -218,22 +243,23 @@ class PointsDatabase {
         S.addProteinLog = this.db.prepare(`INSERT INTO protein_log (guild_id, user_id, item_name, protein_grams, timestamp) VALUES (?, ?, ?, ?, ?)`);
         S.getDailyProtein = this.db.prepare(`SELECT SUM(protein_grams) AS total FROM protein_log WHERE guild_id = ? AND user_id = ? AND timestamp >= ?`);
         
-        // **NEW:** Statements for clearing user data
         S.clearUserPoints = this.db.prepare(`DELETE FROM points WHERE guild_id = ? AND user_id = ?`);
         S.clearUserLog = this.db.prepare(`DELETE FROM points_log WHERE guild_id = ? AND user_id = ?`);
         S.clearUserAchievements = this.db.prepare(`DELETE FROM achievements WHERE guild_id = ? AND user_id = ?`);
         S.clearUserCooldowns = this.db.prepare(`DELETE FROM cooldowns WHERE guild_id = ? AND user_id = ?`);
         S.clearUserProtein = this.db.prepare(`DELETE FROM protein_log WHERE guild_id = ? AND user_id = ?`);
+        S.clearUserBuddy = this.db.prepare(`DELETE FROM buddies WHERE guild_id = ? AND user_id = ?`); // Also clear buddy
         
         this.stmts = S;
     }
     
-    // **PATCH 2: Replaced modifyPoints function**
+    // **PATCH: Replaced modifyPoints function with your patch**
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
       this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
       const modAmount = Number(amount) || 0;
       if (modAmount === 0) return [];
 
+      // 🔹 Choose correct column or fallback
       const safeCols = [
         'gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga',
         'cooking', 'sweeping', 'toiletcleaning', 'gardening', 'carwash', 'dishwashing'
@@ -251,8 +277,6 @@ class PointsDatabase {
       } else if (!safeCols.includes(category)) {
           // This should not happen if admin commands use choices, but as a safeguard:
           console.warn(`Unknown category ${category} in modifyPoints, applying to 'total' only via log`);
-          // We will still log it, and recalc will fix the total.
-          // We don't have a specific column, so we just log and update total
           targetCol = null; // Will not update a specific column
       }
 
@@ -276,7 +300,10 @@ class PointsDatabase {
       `);
       recalc.run(guildId, userId);
 
-      // 🔹 Log transaction (use the original category)
+      // 🔹 Log transaction (with event_key)
+      const keyData = `${guildId}:${userId}:${category}:${amount}:${reason || ''}:${notes || ''}`;
+      const eventKey = crypto.createHash('sha256').update(keyData).digest('hex');
+      
       this.stmts.logPoints.run(
         guildId,
         userId,
@@ -284,7 +311,8 @@ class PointsDatabase {
         modAmount,
         Math.floor(Date.now() / 1000),
         reason,
-        notes
+        notes,
+        eventKey // Add the unique key
       );
 
       // 🔹 Maintain streaks and achievements
@@ -302,7 +330,7 @@ class PointsDatabase {
     close() { this.db.close(); }
 }
 
-// **PATCH 3: Updated reconcileTotals to include chore columns**
+// **PATCH: Updated reconcileTotals to include chore columns**
 function reconcileTotals(db) {
   try {
     console.log("🔄 Reconciling all totals and categories from points_log...");
@@ -706,12 +734,11 @@ class CommandHandler {
     
     async handleAdmin(interaction) { 
         const { guild, user, options } = interaction; const sub = options.getSubcommand(); const targetUser = options.getUser('user', true);
-
-        // Handle clear_user_data first
+        
         if (sub === 'clear_user_data') {
             const confirm = options.getString('confirm', true);
             if (confirm !== 'CONFIRM') {
-                return interaction.editReply({ content: '❌ Action cancelled. You must type `CONFIRM` to approve.', flags: [MessageFlags.Ephemeral] });
+                return interaction.editReply({ content: '❌ Action cancelled. You must type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] });
             }
             try {
                 this.db.db.transaction(() => {
@@ -720,22 +747,21 @@ class CommandHandler {
                     this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserProtein.run(guild.id, targetUser.id);
+                    this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); // Also clear buddy
                 })();
-                return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been deleted.`, flags: [MessageFlags.Ephemeral] });
+                return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been permanently deleted.`, flags: [MessageFlags.Ephemeral] });
             } catch (err) {
                 console.error("Error clearing user data:", err);
-                return interaction.editReply({ content: `❌ An error occurred.`, flags: [MessageFlags.Ephemeral] });
+                return interaction.editReply({ content: `❌ An error occurred while trying to clear data.`, flags: [MessageFlags.Ephemeral] });
             }
         }
-
+        
         if (sub === 'award' || sub === 'deduct') { 
             const amt = options.getNumber('amount', true); 
             const cat = options.getString('category', true); 
             const rsn = options.getString('reason') || `Admin action`; 
-            const finalAmt = sub === 'award' ? amt : -amt; 
+            const finalAmt = sub === 'award' ? amt : -finalAmt; 
             
-            // **THIS IS THE FIX:** We pass the category 'cat' directly.
-            // modifyPoints will handle logging it as 'cat' and updating the correct 'points' table column.
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
             
             const act = sub === 'award' ? 'Awarded' : 'Deducted'; 
