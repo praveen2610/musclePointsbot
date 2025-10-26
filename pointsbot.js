@@ -1069,20 +1069,40 @@ async function main() {
                 }
             }
              console.log(`[Interaction] Successfully processed command: /${interaction.commandName} for ${interaction.user.tag}`);
-        } catch (err) {
+   } catch (err) {
             console.error(`❌ [Interaction Error] Cmd Error for /${interaction.commandName} by ${interaction.user.tag}:`, err);
+
+            // NEW: Specific handling for "Unknown Interaction"
+            if (err.code === 10062) {
+                console.log("[Interaction Error] Encountered 'Unknown Interaction' (10062). Cannot send a reply.");
+                return; // Stop processing for this interaction
+            }
+
+            // Original error reply logic for other errors
             const errorReply = { content: `❌ Error processing command. Please check the bot logs or contact the administrator.`, flags: [MessageFlags.Ephemeral] };
             try {
                 if (interaction.replied || interaction.deferred) {
-                    await interaction.editReply(errorReply);
+                    // Check if we can still edit the reply (might fail if original defer failed)
+                    await interaction.editReply(errorReply).catch(editErr => {
+                        console.error("❌ [Interaction Error] Failed to editReply after initial error:", editErr);
+                        // Optional: Try a followup if edit fails
+                        interaction.followUp(errorReply).catch(followUpErr => {
+                             console.error("❌ [Interaction Error] Failed to followUp after editReply failed:", followUpErr);
+                        });
+                    });
                 } else {
-                    // If deferReply failed, try a fresh reply
-                    await interaction.reply(errorReply);
+                    // If deferReply failed early, try a fresh reply
+                    await interaction.reply(errorReply).catch(replyErr => {
+                         console.error("❌ [Interaction Error] Failed to send initial error reply:", replyErr);
+                    });
                 }
             }
-            catch (e) { console.error("❌ [Interaction Error] Error sending error reply:", e); }
+            catch (e) {
+                // Catch potential errors during the error reporting itself
+                console.error("❌ [Interaction Error] CRITICAL: Error occurred while trying to send an error reply:", e);
+            }
         }
-    });
+    }); // End of client.on('interactionCreate')
 
     // Graceful Shutdown Logic
     const shutdown = (signal) => {
