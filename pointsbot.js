@@ -439,6 +439,16 @@ function buildCommands() {
     const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
     const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories ];
 
+    // NEW: Table choices for the new admin command
+    const tableChoices = [
+        { name: 'Points (Summary)', value: 'points' },
+        { name: 'Points Log (History)', value: 'points_log' },
+        { name: 'Cooldowns', value: 'cooldowns' },
+        { name: 'Buddies', value: 'buddies' },
+        { name: 'Achievements', value: 'achievements' },
+        { name: 'Protein Log', value: 'protein_log' }
+    ];
+
     return [
         ...fixedPointCategories.map(name => new SlashCommandBuilder().setName(name).setDescription(`Log ${name} (+${POINTS[name]} pts)`)),
         
@@ -481,6 +491,10 @@ function buildCommands() {
             .addSubcommand(s=>s.setName('clear_user_data').setDescription('🔥 Wipe ALL data for a user (IRREVERSIBLE)')
                 .addUserOption(o=>o.setName('user').setRequired(true).setDescription('The user to wipe'))
                 .addStringOption(o=>o.setName('confirm').setRequired(true).setDescription('Type the word CONFIRM to approve this action'))
+            )
+            // NEW: Subcommand to show tables
+            .addSubcommand(s=>s.setName('show_table').setDescription('🔒 Dumps the content of a database table (Top 30 rows)')
+                .addStringOption(o=>o.setName('table_name').setRequired(true).setDescription('The table to show').addChoices(...tableChoices))
             ),
         
         new SlashCommandBuilder()
@@ -752,21 +766,25 @@ class CommandHandler {
     }
     
     async handleAdmin(interaction) { 
-        const { guild, user, options } = interaction; const sub = options.getSubcommand(); const targetUser = options.getUser('user', true);
+        const { guild, user, options } = interaction; const sub = options.getSubcommand(); 
+        const targetUser = options.getUser('user'); // 'user' is not required for 'show_table'
         
         if (sub === 'clear_user_data') {
+            if (!targetUser) return interaction.editReply({ content: 'You must specify a user to clear.', flags: [MessageFlags.Ephemeral] });
             const confirm = options.getString('confirm', true);
             if (confirm !== 'CONFIRM') {
                 return interaction.editReply({ content: '❌ Action cancelled. You must type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] });
             }
             try {
+                // This transaction correctly clears ALL data for the user from
+                // the "current" table (points) and "historic" table (points_log)
                 this.db.db.transaction(() => {
                     this.db.stmts.clearUserPoints.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserLog.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id);
                     this.db.stmts.clearUserProtein.run(guild.id, targetUser.id);
-                    this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); // Also clear buddy
+                    this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); 
                 })();
                 return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> has been permanently deleted.`, flags: [MessageFlags.Ephemeral] });
             } catch (err) {
@@ -774,12 +792,55 @@ class CommandHandler {
                 return interaction.editReply({ content: `❌ An error occurred while trying to clear data.`, flags: [MessageFlags.Ephemeral] });
             }
         }
+
+        // NEW: Handle 'show_table'
+        if (sub === 'show_table') {
+            const tableName = options.getString('table_name', true);
+            // Basic sanitization to prevent injection
+            const allowedTables = ['points', 'points_log', 'cooldowns', 'buddies', 'achievements', 'protein_log'];
+            if (!allowedTables.includes(tableName)) {
+                return interaction.editReply({ content: '❌ Invalid table name.', flags: [MessageFlags.Ephemeral] });
+            }
+            try {
+                const rows = this.db.db.prepare(`SELECT * FROM ${tableName} ORDER BY id DESC LIMIT 30`).all();
+                if (rows.length === 0) {
+                    return interaction.editReply({ content: `✅ Table \`${tableName}\` is empty.`, flags: [MessageFlags.Ephemeral] });
+                }
+                const data = JSON.stringify(rows, null, 2);
+                const attachment = new AttachmentBuilder(Buffer.from(data), { name: `${tableName}_dump.json` });
+                return interaction.editReply({ 
+                    content: `✅ Here are the last 30 rows from the \`${tableName}\` table:`,
+                    files: [attachment],
+                    flags: [MessageFlags.Ephemeral]
+                });
+            } catch (err) {
+                console.error(`Error showing table ${tableName}:`, err);
+                // Handle case where table doesn't have 'id' (like 'points')
+                if (err.message.includes("no such column: id")) {
+                     const rows = this.db.db.prepare(`SELECT * FROM ${tableName} LIMIT 30`).all();
+                     if (rows.length === 0) {
+                        return interaction.editReply({ content: `✅ Table \`${tableName}\` is empty.`, flags: [MessageFlags.Ephemeral] });
+                    }
+                     const data = JSON.stringify(rows, null, 2);
+                     const attachment = new AttachmentBuilder(Buffer.from(data), { name: `${tableName}_dump.json` });
+                     return interaction.editReply({ 
+                        content: `✅ Here are the first 30 rows from the \`${tableName}\` table:`,
+                        files: [attachment],
+                        flags: [MessageFlags.Ephemeral]
+                    });
+                }
+                return interaction.editReply({ content: `❌ Error fetching table data.`, flags: [MessageFlags.Ephemeral] });
+            }
+        }
         
+        // All other commands require a targetUser
+        if (!targetUser) return interaction.editReply({ content: `You must specify a user for this command.`, flags: [MessageFlags.Ephemeral] });
+
         if (sub === 'award' || sub === 'deduct') { 
             const amt = options.getNumber('amount', true); 
             const cat = options.getString('category', true); 
             const rsn = options.getString('reason') || `Admin action`; 
-            const finalAmt = sub === 'award' ? amt : -amt; // Fixed logic error here
+            const finalAmt = sub === 'award' ? amt : -amt; // Corrected logic
             
             this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
             
@@ -823,7 +884,22 @@ async function main() {
     if (!CONFIG.token || !CONFIG.appId) { console.error('Missing env vars'); process.exit(1); }
 
     const database = new PointsDatabase(CONFIG.dbFile);
+    
+    // Run reconciliation to ensure 'points' table is in sync with 'points_log'
     reconcileTotals(database.db);
+    
+    // ------------------
+    // NEW FIX: Force a WAL checkpoint
+    // ------------------
+    // This commits all data from the write-ahead-log to the main DB file
+    // and fixes the race condition where the bot would log in before
+    // the 'points' table was readable.
+    try {
+        database.db.pragma('wal_checkpoint(FULL)');
+        console.log("✅ Database checkpoint complete. Ready to log in.");
+    } catch (e) {
+        console.error("❌ Database checkpoint failed:", e);
+    }
     
     const handler = new CommandHandler(database);
 
@@ -883,7 +959,9 @@ async function main() {
                     case 'admin': await handler.handleAdmin(interaction); break;
                     case 'recalculate':
                         await interaction.editReply({ content: '🔄 Recalculating totals...'});
-                        reconcileTotals(database.db); 
+                        reconcileTotals(database.db);
+                        // Add checkpoint here too for good measure
+                        database.db.pragma('wal_checkpoint(FULL)');
                         await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` });
                         break;
                     case 'db_download':
