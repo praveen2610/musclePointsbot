@@ -1,4 +1,4 @@
-// pointsbot.js - Final Audited & Corrected Version (Syntax Fixes)
+// pointsbot.js - Final Audited & Corrected Version (With Junk Fix)
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -104,13 +104,11 @@ class PointsDatabase {
             S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
             S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
             
-            // --- LEADERBOARD FIX: Show users with 0 points ---
             S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total >= 0 ORDER BY total DESC LIMIT 10`);
             
             ALL_POINT_COLUMNS.forEach(col => { S[`lbAllCatFromPoints_${col}`] = this.db.prepare(`SELECT user_id as userId, ${col} as score FROM points WHERE guild_id=? AND ${col} > 0 ORDER BY ${col} DESC LIMIT 10`); });
             
             S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total >= 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
-            // ----------------------------------------------------
 
             S.recalcUserTotal = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = @guild_id AND user_id = @user_id`);
 
@@ -144,7 +142,6 @@ class PointsDatabase {
     }
 
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
-      // Ensure user exists first
       this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
       
       const modAmount = Number(amount) || 0;
@@ -155,22 +152,18 @@ class PointsDatabase {
       else if (category === 'junk') { const up = this.stmts.getUser.get(guildId, userId) || {}; targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise'; }
       else if (!safeCols.includes(category)) { console.warn(`[modifyPoints Warn] Unknown category '${category}'`); targetCol = null; }
       
-      // Update the specific category column (e.g., 'exercise')
       if (targetCol && safeCols.includes(targetCol)) {
           const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
           stmt.run({ amt: modAmount, gid: guildId, uid: userId });
       }
       
-      // Recalculate total for the user using the prepared statement
       this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
 
-      // --- STALE SCORE FIX ---
       try {
           this.db.pragma('wal_checkpoint(FULL)');
       } catch (cpErr) {
           console.error(`[modifyPoints DB Error] WAL Checkpoint failed for ${userId}:`, cpErr);
       }
-      // -----------------------
 
       const eventKey = crypto.randomUUID();
       try {
@@ -208,7 +201,7 @@ class PointsDatabase {
     }
 }
 
-// --- DEBUG RECONCILE ---
+// --- *** FIXED RECONCILE WITH JUNK HANDLING *** ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
@@ -223,20 +216,21 @@ function reconcileTotals(db) {
               return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`;
           }
       }).join(',\n        ');
+    
+    // Add junk sum separately (it will be negative or zero)
+    const categoryWithJunk = categorySums + `,\n        SUM(CASE WHEN category = 'junk' THEN amount ELSE 0 END) as junk_total`;
         
-    console.log(`[Reconcile] Generated category sums SQL:\n${categorySums}`);
+    console.log(`[Reconcile] Generated category sums SQL:\n${categoryWithJunk}`);
         
-    const logTotals = db.prepare(`SELECT guild_id, user_id, ${categorySums} FROM points_log GROUP BY guild_id, user_id`).all();
+    const logTotals = db.prepare(`SELECT guild_id, user_id, ${categoryWithJunk} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
 
-    // *** ADD THIS DEBUG LOG ***
     const vidyaData = logTotals.find(r => r.user_id === '1429443296031150142');
     if (vidyaData) {
         console.log(`[Reconcile DEBUG] Vidya's data from log:`, JSON.stringify(vidyaData, null, 2));
     } else {
         console.log(`[Reconcile DEBUG] Vidya NOT FOUND in logTotals!`);
     }
-    // *** END DEBUG LOG ***
 
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
@@ -253,15 +247,22 @@ function reconcileTotals(db) {
       let upsertCount = 0;
       for (const row of rowsFromLog) {
         ensureUserStmt.run(row.guild_id, row.user_id);
-        const calculatedTotal = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0);
+        
+        // Calculate total INCLUDING junk deductions
+        const calculatedTotal = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0) + (row.junk_total || 0);
+        
         const upsertData = { guild_id: row.guild_id, user_id: row.user_id, total: Math.max(0, calculatedTotal) };
         ALL_POINT_COLUMNS.forEach(col => { upsertData[col] = Math.max(0, row[col] || 0); });
                 
-        // *** ADD THIS DEBUG LOG ***
         if (row.user_id === '1429443296031150142') {
             console.log(`[Reconcile DEBUG] Upserting Vidya with data:`, JSON.stringify(upsertData, null, 2));
         }
-        // *** END DEBUG LOG ***
+        
+        // Debug log for Re (user who had junk deduction)
+        if (row.user_id === '1097459423053615176') {
+            console.log(`[Reconcile DEBUG] Re's data from log:`, JSON.stringify(row, null, 2));
+            console.log(`[Reconcile DEBUG] Upserting Re with data:`, JSON.stringify(upsertData, null, 2));
+        }
                 
         upsertStmt.run(upsertData);
         upsertCount++;
@@ -276,7 +277,6 @@ function reconcileTotals(db) {
     console.error("❌ [Reconcile] Reconciliation error:", err);
   }
 }
-// --- END DEBUG RECONCILE ---
 
 // --- Utilities ---
 const formatNumber = (n) => (Math.round(n * 1000) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -286,15 +286,13 @@ function nextRankProgress(total) { const cur = getUserRank(total); if (cur.next 
 const formatCooldown = (ms) => { if (ms <= 0) return 'Ready!'; const s = Math.floor(ms / 1000); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const sec = s % 60; let str = ''; if (h > 0) str += `${h}h `; if (m > 0) str += `${m}m `; if (h === 0 && m === 0 && sec > 0) str += `${sec}s`; else if (h === 0 && m === 0 && sec <= 0) return 'Ready!'; return str.trim() || 'Ready!'; };
 function getPeriodRange(period = 'week') { const n = new Date(); let s = new Date(n); let e = new Date(n); switch(period){ case 'day': s.setHours(0,0,0,0); e.setHours(23,59,59,999); break; case 'month': s = new Date(n.getFullYear(), n.getMonth(), 1); e = new Date(n.getFullYear(), n.getMonth()+1, 0, 23, 59, 59, 999); break; case 'year': s = new Date(n.getFullYear(), 0, 1); e = new Date(n.getFullYear(), 11, 31, 23, 59, 59, 999); break; case 'week': default: const d=n.getDay()||7; s.setDate(n.getDate()-d+1); s.setHours(0,0,0,0); e.setDate(s.getDate()+6); e.setHours(23,59,59,999); break; } return {start: Math.floor(s.getTime()/1000), end: Math.floor(e.getTime()/1000)}; }
 function getPeriodStart(period = 'day') { const n=new Date(); n.setHours(0,0,0,0); return Math.floor(n.getTime()/1000); }
-function createKeepAliveServer() { // Restored definition
+function createKeepAliveServer() {
     http.createServer((req, res) => {
         res.writeHead(200, {'Content-Type': 'text/plain'});
         res.end('OK');
     }).listen(process.env.PORT || 3000, () => console.log(`✅ Keep-alive server running on port ${process.env.PORT || 3000}.`));
 }
 
-
-// --- buildCommands (Added /admin resetpoints and export_user_log) ---
 function buildCommands() {
     const fixedPointCategories = Object.keys(POINTS);
     const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
@@ -343,8 +341,6 @@ function buildCommands() {
     ].map(c => c.toJSON());
 }
 
-
-// --- CommandHandler (Includes handleResetPoints and handleExportUserLog) ---
 class CommandHandler {
     constructor(db) { this.db = db; }
 
@@ -413,7 +409,7 @@ class CommandHandler {
         const uR = this.db.stmts.getUser.get(guild.id, tU.id) || { total: 0, current_streak: 0 }; const { pct, cur, need } = nextRankProgress(uR.total);
         const ach = this.db.stmts.getUserAchievements.all(guild.id, tU.id).map(r => r.achievement_id);
         const e = new EmbedBuilder().setColor(cur.color).setAuthor({ name: tU.displayName, iconURL: tU.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields({ name: 'Points', value: formatNumber(uR.total), inline: true }, { name: 'Streak', value: `🔥 ${uR.current_streak || 0}d`, inline: true }, { name: 'Progress', value: progressBar(pct), inline: false }, { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' });
-        let fT = `PID: ${BOT_PROCESS_ID}`; if (need > 0) fT = `${formatNumber(need)} pts to next rank! | ${fT}`; e.setFooter({ text: fT });
+        let fT = `PID: ${BOT_PROCESS_ID}`; if (need > 0) fT = `${formatNumber(need)} pts to next rank ! | ${fT}`; e.setFooter({ text: fT });
         return interaction.editReply({ content:'', embeds: [e] });
     }
     async handleLeaderboard(interaction) {
@@ -459,9 +455,7 @@ class CommandHandler {
         if (sub === 'add_protein' || sub === 'deduct_protein') {
             let g = options.getNumber('grams', true);
             const rsn = options.getString('reason') || `Admin action`;
-            // --- *** START FIX *** ---
-            if (sub === 'deduct_protein') g = -g; // Corrected from dedDeduct_protein
-            // --- *** END FIX *** ---
+            if (sub === 'deduct_protein') g = -g;
             this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000));
             const act = sub === 'add_protein' ? 'Added' : 'Deducted';
             return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` });
@@ -515,12 +509,8 @@ class CommandHandler {
     async handleDbDownload(interaction) {
         const dbPath = CONFIG.dbFile; try { if (!fs.existsSync(dbPath)) { return interaction.editReply({ content: '❌ DB file not found.' }); } const att = new AttachmentBuilder(dbPath, { name: 'points.db' }); await interaction.editReply({ content: '✅ DB Backup:', files: [att] }); } catch (err) { console.error("Error sending DB:", err); await interaction.editReply({ content: '❌ Could not send DB.' }).catch(()=>{}); }
     }
-} // End CommandHandler
+}
 
-
-/* =========================
-    MAIN BOT INITIALIZATION
-========================= */
 async function main() {
     console.log("[Startup] Starting main function...");
     createKeepAliveServer();
@@ -536,7 +526,6 @@ async function main() {
 
     client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
 
-    // --- InteractionCreate Handler ---
     client.on('interactionCreate', async (interaction) => {
         const receivedTime = Date.now();
         if (!isBotReady) { try { if (!interaction.replied && !interaction.deferred) { await interaction.reply({ content: "⏳ Bot starting...", flags: MessageFlags.Ephemeral }); } } catch (e) { console.error("Could not send 'not ready' reply:", e); } return; }
@@ -548,9 +537,6 @@ async function main() {
             if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data', 'export_user_log'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
-            // --- *** START FIX *** ---
-            // Removed stray "Example" word from here
-            // --- *** END FIX *** ---
             if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false;
 
@@ -570,7 +556,7 @@ async function main() {
                     case 'buddy': await handler.handleBuddy(interaction); break;
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
-                    case 'admin': await handler.handleAdmin(interaction); break; // Routes subcommands internally
+                    case 'admin': await handler.handleAdmin(interaction); break;
                     case 'recalculate': console.log("[Cmd] /recalculate"); reconcileTotals(database.db); database.db.pragma('wal_checkpoint(FULL)'); console.log("[Cmd] Recalc complete."); await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` }); break;
                     case 'db_download': console.log("[Cmd] /db_download"); await handler.handleDbDownload(interaction); break;
                     default: console.warn(`[Cmd Warn] Unhandled: ${commandName}`); await interaction.editReply({ content: "Unknown cmd."});
@@ -580,10 +566,11 @@ async function main() {
             const errorTime = Date.now(); console.error(`❌ [Interaction Error] Cmd /${interaction.commandName} by ${interaction.user.tag} at ${errorTime} (Total: ${errorTime - receivedTime}ms):`, err);
             if (!initialReplySuccessful && err.code === 10062) { console.error("❌ CRITICAL: Initial ack failed (10062). Cannot proceed."); return; }
             const errorReply = { content: `❌ Error processing command. Check logs.`}; const errorReplyEphemeral = { ...errorReply, flags: [MessageFlags.Ephemeral]};
-            try { if (initialReplySuccessful) { await interaction.editReply(errorReply).catch(editErr => { console.error("❌ Failed editReply w/ error:", editErr); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after edit fail:", followUpErr); }); }); } else { console.warn("[Warn] Initial reply failed (not 10062). Attempting followup."); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after non-10062 initial fail:", followUpErr); }); } }
+            try { if (initialReplySuccessful) { await interaction.editReply(errorReply).catch(editErr => { console.error("❌ Failed editReply w/ error:", editErr); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after edit fail:", followUpErr); }); }); } else { console.warn("[Warn] Initial reply failed (not 10062). Attempting followup."); interaction
+			.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after non-10062 initial fail:", followUpErr); }); } }
             catch (e) { console.error("❌ CRITICAL: Error sending error reply:", e); }
         }
-    }); // End interactionCreate
+    });
 
     const shutdown = (signal) => { console.log(`[Shutdown] Received ${signal}. Shutting down...`); isBotReady = false; console.log('[Shutdown] Destroying Discord client...'); client?.destroy(); setTimeout(() => { console.log('[Shutdown] Closing database...'); database?.close(); console.log("[Shutdown] Exiting."); process.exit(0); }, 1500); };
     process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
