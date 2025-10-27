@@ -1,4 +1,4 @@
-// pointsbot.js - Final Audited & Corrected Version (with reconcile debug)
+// pointsbot.js - Final Audited & Corrected Version (Syntax Fixes)
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -208,7 +208,7 @@ class PointsDatabase {
     }
 }
 
-// --- *** START DEBUG RECONCILE *** ---
+// --- DEBUG RECONCILE ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
@@ -276,7 +276,7 @@ function reconcileTotals(db) {
     console.error("❌ [Reconcile] Reconciliation error:", err);
   }
 }
-// --- *** END DEBUG RECONCILE *** ---
+// --- END DEBUG RECONCILE ---
 
 // --- Utilities ---
 const formatNumber = (n) => (Math.round(n * 1000) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -456,7 +456,16 @@ class CommandHandler {
         if (sub === 'download_all_tables') { return this.handleDownloadAllTables(interaction); }
         if (!targetUser && ['award', 'deduct', 'add_protein', 'deduct_protein'].includes(sub)) { return interaction.editReply({ content: `User required for '${sub}'.`, flags: [MessageFlags.Ephemeral] }); }
         if (sub === 'award' || sub === 'deduct') { const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt; this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); const act = sub === 'award' ? 'Awarded' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); }
-        if (sub === 'add_protein' || sub === 'deduct_protein') { let g = options.getNumber('grams', true); const rsn = options.getString('reason') || `Admin action`; if (sub === 'dedDeduct_protein') g = -g; this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); const act = sub === 'add_protein' ? 'Added' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); }
+        if (sub === 'add_protein' || sub === 'deduct_protein') {
+            let g = options.getNumber('grams', true);
+            const rsn = options.getString('reason') || `Admin action`;
+            // --- *** START FIX *** ---
+            if (sub === 'deduct_protein') g = -g; // Corrected from dedDeduct_protein
+            // --- *** END FIX *** ---
+            this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000));
+            const act = sub === 'add_protein' ? 'Added' : 'Deducted';
+            return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` });
+        }
     }
 
     async handleResetPoints(interaction) {
@@ -539,7 +548,9 @@ async function main() {
             if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data', 'export_user_log'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
-Example
+            // --- *** START FIX *** ---
+            // Removed stray "Example" word from here
+            // --- *** END FIX *** ---
             if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false;
 
