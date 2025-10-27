@@ -1,4 +1,4 @@
-// pointsbot.js - Final Audited & Corrected Version
+// pointsbot.js - Final Audited & Corrected Version (with reconcile debug)
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -112,10 +112,7 @@ class PointsDatabase {
             S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total >= 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
             // ----------------------------------------------------
 
-            // --- *** START FIX *** ---
-            // Add prepared statement for recalculating a single user's total
             S.recalcUserTotal = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = @guild_id AND user_id = @user_id`);
-            // --- *** END FIX *** ---
 
             S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
             S.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
@@ -164,14 +161,10 @@ class PointsDatabase {
           stmt.run({ amt: modAmount, gid: guildId, uid: userId });
       }
       
-      // --- *** START FIX *** ---
       // Recalculate total for the user using the prepared statement
-      // This ensures the 'total' column is immediately consistent
       this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
-      // --- *** END FIX *** ---
 
       // --- STALE SCORE FIX ---
-      // Force the database changes to be written to the main file *before* logging or returning
       try {
           this.db.pragma('wal_checkpoint(FULL)');
       } catch (cpErr) {
@@ -215,39 +208,66 @@ class PointsDatabase {
     }
 }
 
-// --- reconcileTotals ---
+// --- *** START DEBUG RECONCILE *** ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
     const exerciseCase = EXERCISE_CATEGORIES.map(c => `'${c}'`).join(',');
+    console.log(`[Reconcile] Exercise categories for CASE: ${exerciseCase}`);
+        
     const categorySums = ALL_POINT_COLUMNS.map(col => {
-         if (col === 'exercise') { return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`; }
-         else { return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`; }
+         if (col === 'exercise') {
+              return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`;
+          }
+         else {
+              return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`;
+          }
       }).join(',\n        ');
+        
+    console.log(`[Reconcile] Generated category sums SQL:\n${categorySums}`);
+        
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categorySums} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
+
+    // *** ADD THIS DEBUG LOG ***
+    const vidyaData = logTotals.find(r => r.user_id === '1429443296031150142');
+    if (vidyaData) {
+        console.log(`[Reconcile DEBUG] Vidya's data from log:`, JSON.stringify(vidyaData, null, 2));
+    } else {
+        console.log(`[Reconcile DEBUG] Vidya NOT FOUND in logTotals!`);
+    }
+    // *** END DEBUG LOG ***
+
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
     const ensureUserStmt = db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`);
     const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all();
-     console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
+    console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
 
     const tx = db.transaction((guildsToReset, rowsFromLog) => {
       console.log(`[Reconcile] Starting transaction...`);
       let resetCount = 0;
       for (const g of guildsToReset) { resetStmt.run(g.guild_id); resetCount++; }
       console.log(`[Reconcile] Reset points table for ${resetCount} guilds.`);
+            
       let upsertCount = 0;
       for (const row of rowsFromLog) {
         ensureUserStmt.run(row.guild_id, row.user_id);
         const calculatedTotal = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0);
         const upsertData = { guild_id: row.guild_id, user_id: row.user_id, total: Math.max(0, calculatedTotal) };
         ALL_POINT_COLUMNS.forEach(col => { upsertData[col] = Math.max(0, row[col] || 0); });
+                
+        // *** ADD THIS DEBUG LOG ***
+        if (row.user_id === '1429443296031150142') {
+            console.log(`[Reconcile DEBUG] Upserting Vidya with data:`, JSON.stringify(upsertData, null, 2));
+        }
+        // *** END DEBUG LOG ***
+                
         upsertStmt.run(upsertData);
         upsertCount++;
       }
-       console.log(`[Reconcile] Upserted ${upsertCount} user rows into points table.`);
-       console.log(`[Reconcile] Transaction finished.`);
+      console.log(`[Reconcile] Upserted ${upsertCount} user rows into points table.`);
+      console.log(`[Reconcile] Transaction finished.`);
     });
 
     tx(guilds, logTotals);
@@ -256,6 +276,7 @@ function reconcileTotals(db) {
     console.error("❌ [Reconcile] Reconciliation error:", err);
   }
 }
+// --- *** END DEBUG RECONCILE *** ---
 
 // --- Utilities ---
 const formatNumber = (n) => (Math.round(n * 1000) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -435,7 +456,7 @@ class CommandHandler {
         if (sub === 'download_all_tables') { return this.handleDownloadAllTables(interaction); }
         if (!targetUser && ['award', 'deduct', 'add_protein', 'deduct_protein'].includes(sub)) { return interaction.editReply({ content: `User required for '${sub}'.`, flags: [MessageFlags.Ephemeral] }); }
         if (sub === 'award' || sub === 'deduct') { const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt; this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); const act = sub === 'award' ? 'Awarded' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); }
-        if (sub === 'add_protein' || sub === 'deduct_protein') { let g = options.getNumber('grams', true); const rsn = options.getString('reason') || `Admin action`; if (sub === 'deduct_protein') g = -g; this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); const act = sub === 'add_protein' ? 'Added' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); }
+        if (sub === 'add_protein' || sub === 'deduct_protein') { let g = options.getNumber('grams', true); const rsn = options.getString('reason') || `Admin action`; if (sub === 'dedDeduct_protein') g = -g; this.db.stmts.addProteinLog.run(guild.id, targetUser.id, `Admin: ${rsn}`, g, Math.floor(Date.now() / 1000)); const act = sub === 'add_protein' ? 'Added' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(g))}g protein for <@${targetUser.id}>.` }); }
     }
 
     async handleResetPoints(interaction) {
@@ -518,6 +539,7 @@ async function main() {
             if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data', 'export_user_log'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
+Example
             if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false;
 
