@@ -1,4 +1,4 @@
-// pointsbot.js - FINAL VERSION WITH DATA LOSS PREVENTION
+// pointsbot.js - FINAL FIX FOR DATA LOSS ISSUE
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -45,13 +45,13 @@ const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','car
 const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES];
 
 /* =========================
-    DATABASE CLASS WITH DATA PROTECTION
+    DATABASE CLASS WITH CRITICAL FIX
 ========================= */
 class PointsDatabase {
     constructor(dbPath) {
         try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (err) { if (err.code !== 'EEXIST') console.error('[DB Error] Could not create data directory:', err); }
         
-        // *** CRITICAL: Check for multiple instances ***
+        // Check for multiple instances
         const lockFile = path.join(path.dirname(dbPath), '.bot.lock');
         try {
             if (fs.existsSync(lockFile)) {
@@ -72,7 +72,7 @@ class PointsDatabase {
             this.db.pragma('foreign_keys = ON');
             console.log("✅ [DB] Database connection opened successfully.");
             
-            // *** INTEGRITY CHECK ***
+            // Integrity check
             const integrityCheck = this.db.prepare('PRAGMA integrity_check').get();
             if (integrityCheck.integrity_check === 'ok') {
                 console.log("✅ [DB] Database integrity check passed.");
@@ -87,7 +87,7 @@ class PointsDatabase {
         this.initSchema();
         this.performMigrations();
         this.prepareStatements();
-        this.createBackup(); // Backup before any operations
+        this.createBackup();
         console.log("✅ [DB] Database class initialized.");
     }
 
@@ -99,7 +99,7 @@ class PointsDatabase {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
             const backupFile = path.join(backupDir, `points_backup_${timestamp}.db`);
             
-            // Only keep last 5 backups
+            // Keep last 5 backups
             const backups = fs.readdirSync(backupDir)
                 .filter(f => f.startsWith('points_backup_'))
                 .sort()
@@ -148,10 +148,9 @@ class PointsDatabase {
                 catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
             
-            // *** FIX MILLISECOND TIMESTAMPS ***
+            // Fix millisecond timestamps
             console.log("🔄 [DB Migration] Fixing millisecond timestamps in points_log...");
             try {
-                // Find entries with timestamps in milliseconds (> year 2038 in unix seconds)
                 const badEntries = this.db.prepare(`SELECT id, ts FROM points_log WHERE ts > 2147483647`).all();
                 console.log(`[Migration] Found ${badEntries.length} entries with millisecond timestamps`);
                 
@@ -178,7 +177,7 @@ class PointsDatabase {
     prepareStatements() {
         try {
             const S = this.stmts = {};
-            S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) WHERE event_key IS NOT NULL DO NOTHING`);
+            S.logPoints = this.db.prepare(`INSERT INTO points_log (guild_id, user_id, category, amount, ts, reason, notes, event_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
             S.upsertUser = this.db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (@guild_id, @user_id) ON CONFLICT(guild_id, user_id) DO NOTHING`);
             S.getUser = this.db.prepare(`SELECT * FROM points WHERE guild_id = ? AND user_id = ?`);
             S.updateStreak = this.db.prepare(`UPDATE points SET current_streak = @current_streak, longest_streak = @longest_streak, last_activity_date = @last_activity_date WHERE guild_id = @guild_id AND user_id = @user_id`);
@@ -222,46 +221,106 @@ class PointsDatabase {
         } catch (stmtErr) { console.error("❌ [DB FATAL] Error preparing statements:", stmtErr); process.exit(1); }
     }
 
+    // *** CRITICAL FIX: PROPER TRANSACTION HANDLING ***
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
-      this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
-      
-      const modAmount = Number(amount) || 0;
-      if (modAmount === 0) return [];
-      
-      const safeCols = ALL_POINT_COLUMNS; let logCategory = category, targetCol = category;
-      if (EXERCISE_CATEGORIES.includes(category)) { targetCol = 'exercise'; }
-      else if (category === 'junk') { const up = this.stmts.getUser.get(guildId, userId) || {}; targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise'; }
-      else if (!safeCols.includes(category)) { console.warn(`[modifyPoints Warn] Unknown category '${category}'`); targetCol = null; }
-      
-      if (targetCol && safeCols.includes(targetCol)) {
-          const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
-          stmt.run({ amt: modAmount, gid: guildId, uid: userId });
-      }
-      
-      this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
-
-      try {
-          this.db.pragma('wal_checkpoint(PASSIVE)');
-      } catch (cpErr) {
-          console.error(`[modifyPoints DB Error] WAL Checkpoint failed for ${userId}:`, cpErr);
-      }
-
-      const eventKey = crypto.randomUUID();
-      const timestampSeconds = Math.floor(Date.now() / 1000); // CRITICAL: Always use seconds
-      
-      try {
-          const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, timestampSeconds, reason, notes, eventKey);
-          if (info.changes === 0 && this.db.inTransaction === false) { 
-              console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); 
-          } else {
-              console.log(`[DB] Logged points for ${userId}: ${modAmount} ${logCategory} (ts: ${timestampSeconds}, eventKey: ${eventKey.substring(0,8)}...)`);
-          }
-      } catch (err) { 
-          console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); 
-      }
-      
-      if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); }
-      return [];
+        console.log(`[modifyPoints] START for user ${userId}: category=${category}, amount=${amount}, reason=${reason}`);
+        
+        const modAmount = Number(amount) || 0;
+        if (modAmount === 0) {
+            console.log(`[modifyPoints] Amount is 0, skipping.`);
+            return [];
+        }
+        
+        const eventKey = crypto.randomUUID();
+        const timestampSeconds = Math.floor(Date.now() / 1000);
+        
+        console.log(`[modifyPoints] Generated eventKey: ${eventKey.substring(0,8)}..., timestamp: ${timestampSeconds}`);
+        
+        try {
+            // *** USE TRANSACTION TO ENSURE ATOMICITY ***
+            const result = this.db.transaction(() => {
+                console.log(`[modifyPoints TX] Starting transaction for ${userId}`);
+                
+                // Step 1: Ensure user exists
+                this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
+                console.log(`[modifyPoints TX] Ensured user exists`);
+                
+                // Step 2: Log the points FIRST (critical!)
+                try {
+                    const logInfo = this.stmts.logPoints.run(
+                        guildId, 
+                        userId, 
+                        category, 
+                        modAmount, 
+                        timestampSeconds, 
+                        reason, 
+                        notes, 
+                        eventKey
+                    );
+                    console.log(`[modifyPoints TX] Log insert result: changes=${logInfo.changes}, lastInsertRowid=${logInfo.lastInsertRowid}`);
+                    
+                    if (logInfo.changes === 0) {
+                        console.error(`[modifyPoints TX] ❌ WARNING: Log insert returned 0 changes!`);
+                        throw new Error('Failed to insert log entry');
+                    }
+                } catch (logErr) {
+                    console.error(`[modifyPoints TX] ❌ CRITICAL: Failed to log points:`, logErr);
+                    throw logErr; // Rollback transaction
+                }
+                
+                // Step 3: Update points table
+                const safeCols = ALL_POINT_COLUMNS;
+                let logCategory = category;
+                let targetCol = category;
+                
+                if (EXERCISE_CATEGORIES.includes(category)) {
+                    targetCol = 'exercise';
+                } else if (category === 'junk') {
+                    const up = this.stmts.getUser.get(guildId, userId) || {};
+                    targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise';
+                } else if (!safeCols.includes(category)) {
+                    console.warn(`[modifyPoints] Unknown category '${category}'`);
+                    targetCol = null;
+                }
+                
+                if (targetCol && safeCols.includes(targetCol)) {
+                    const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
+                    const updateInfo = stmt.run({ amt: modAmount, gid: guildId, uid: userId });
+                    console.log(`[modifyPoints TX] Updated ${targetCol}: changes=${updateInfo.changes}`);
+                }
+                
+                // Step 4: Recalc total
+                this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
+                console.log(`[modifyPoints TX] Recalculated total`);
+                
+                console.log(`[modifyPoints TX] Transaction complete`);
+                return { success: true };
+            })();
+            
+            // Transaction succeeded
+            console.log(`[modifyPoints] ✅ Transaction committed successfully`);
+            
+            // Checkpoint after successful transaction
+            try {
+                this.db.pragma('wal_checkpoint(PASSIVE)');
+                console.log(`[modifyPoints] Checkpoint completed`);
+            } catch (cpErr) {
+                console.error(`[modifyPoints] Checkpoint failed:`, cpErr);
+            }
+            
+            // Update streak and check achievements (outside transaction)
+            if (modAmount > 0) {
+                this.updateStreak(guildId, userId);
+                return this.checkAchievements(guildId, userId);
+            }
+            
+            return [];
+            
+        } catch (err) {
+            console.error(`[modifyPoints] ❌ TRANSACTION FAILED:`, err);
+            console.error(`[modifyPoints] Transaction was rolled back. No changes made.`);
+            throw err; // Re-throw to let caller know it failed
+        }
     }
 
      updateStreak(guildId, userId) {
@@ -304,7 +363,7 @@ class PointsDatabase {
     }
 }
 
-// --- *** FIXED RECONCILE WITH JUNK HANDLING AND BETTER LOGGING *** ---
+// --- RECONCILE WITH BETTER LOGGING ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
@@ -320,7 +379,6 @@ function reconcileTotals(db) {
           }
       }).join(',\n        ');
     
-    // Add junk sum separately (it will be negative or zero)
     const categoryWithJunk = categorySums + `,\n        SUM(CASE WHEN category = 'junk' THEN amount ELSE 0 END) as junk_total`;
         
     console.log(`[Reconcile] Generated category sums SQL:\n${categoryWithJunk}`);
@@ -328,11 +386,10 @@ function reconcileTotals(db) {
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categoryWithJunk} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
 
-    // Debug logging for all users
     console.log(`[Reconcile DEBUG] All users from log:`);
     logTotals.forEach(row => {
         const total = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0) + (row.junk_total || 0);
-        console.log(`  - User ${row.user_id.substring(0, 8)}...: total=${total}, junk=${row.junk_total || 0}`);
+        console.log(`  - User ${row.user_id.substring(0, 8)}...: total=${total}, exercise=${row.exercise || 0}, junk=${row.junk_total || 0}`);
     });
 
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
@@ -351,13 +408,12 @@ function reconcileTotals(db) {
       for (const row of rowsFromLog) {
         ensureUserStmt.run(row.guild_id, row.user_id);
         
-        // Calculate total INCLUDING junk deductions
         const calculatedTotal = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0) + (row.junk_total || 0);
         
         const upsertData = { guild_id: row.guild_id, user_id: row.user_id, total: Math.max(0, calculatedTotal) };
         ALL_POINT_COLUMNS.forEach(col => { upsertData[col] = Math.max(0, row[col] || 0); });
                 
-        console.log(`[Reconcile] Upserting user ${row.user_id.substring(0,8)}...: total=${upsertData.total}, gym=${upsertData.gym}, exercise=${upsertData.exercise}, junk_applied=${row.junk_total || 0}`);
+        console.log(`[Reconcile] Upserting user ${row.user_id.substring(0,8)}...: total=${upsertData.total}, exercise=${upsertData.exercise}`);
                 
         upsertStmt.run(upsertData);
         upsertCount++;
@@ -443,24 +499,36 @@ class CommandHandler {
         const { guild, user } = interaction; const amount = POINTS[category] || 0; const cooldownKey = category;
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
         if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${category}**: ${formatCooldown(remaining)}.` });
-        const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category, amount, reason: `claim:${category}` });
-        this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
-        const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
-        const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} claimed **+${formatNumber(amount)}** pts for **${category}**!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
-        const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
-        if (achievements.length) { return interaction.followUp({ embeds: [new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` })], flags: [MessageFlags.Ephemeral] }); }
+        
+        try {
+            const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category, amount, reason: `claim:${category}` });
+            this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
+            const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
+            const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+            const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} claimed **+${formatNumber(amount)}** pts for **${category}**!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
+            const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
+            if (achievements.length) { return interaction.followUp({ embeds: [new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` })], flags: [MessageFlags.Ephemeral] }); }
+        } catch (err) {
+            console.error(`[handleClaim] Error for ${user.id}:`, err);
+            return interaction.editReply({ content: '❌ Error claiming points. Check logs.' });
+        }
     }
     async handleDistance(interaction, activity) {
         const { guild, user, options } = interaction; const km = options.getNumber('km', true); const amount = km * DISTANCE_RATES[activity]; const cooldownKey = 'exercise';
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey }); if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for exercises: ${formatCooldown(remaining)}.` });
-        const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: activity, amount, reason: `distance:${activity}`, notes: `${km}km` });
-        this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
-        const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
-        const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} logged **${formatNumber(km)}km** ${activity} → **+${formatNumber(amount)}** pts!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
-        const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
-         if (achievements.length) { return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); }
+        
+        try {
+            const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: activity, amount, reason: `distance:${activity}`, notes: `${km}km` });
+            this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
+            const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
+            const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+            const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} logged **${formatNumber(km)}km** ${activity} → **+${formatNumber(amount)}** pts!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
+            const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
+            if (achievements.length) { return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); }
+        } catch (err) {
+            console.error(`[handleDistance] Error for ${user.id}:`, err);
+            return interaction.editReply({ content: '❌ Error logging distance. Check logs.' });
+        }
     }
     async handleExercise(interaction) {
         const { guild, user, options } = interaction; const subcommand = options.getSubcommand();
@@ -473,13 +541,19 @@ class CommandHandler {
              case 'reps': { const c=options.getNumber('count', true); amount=c*EXERCISE_RATES.per_rep; description=`${user} logged **${c} total reps** → **+${formatNumber(amount)}** pts!`; notes=`${c} reps`; break; }
              case 'dumbbells': case 'barbell': case 'pushup': case 'squat': case 'kettlebell': case 'lunge': { const rI=options.getInteger('reps',false); const sI=options.getInteger('sets',false); let tR; if (['squat','kettlebell','lunge'].includes(subcommand)) { tR=rI||options.getInteger('reps',true); notes=`${tR} reps`; } else { const r=rI??1; const s=sI??1; tR=r*s; notes=`${s}x${r} reps`; } const rate=REP_RATES[subcommand]??EXERCISE_RATES.per_rep; amount=tR*rate; description=`${user} logged ${notes} **${subcommand}** → **+${formatNumber(amount)}** pts!`; break; }
         }
-        const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: logCategory, amount, reason: `${reasonPrefix}:${subcommand}`, notes });
-        this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory });
-        const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
-        const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
-        const embed = new EmbedBuilder().setColor(cur.color).setDescription(description).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
-        const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
-        if (achievements.length) { return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); }
+        
+        try {
+            const achievements = this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: logCategory, amount, reason: `${reasonPrefix}:${subcommand}`, notes });
+            this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory });
+            const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
+            const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
+            const embed = new EmbedBuilder().setColor(cur.color).setDescription(description).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
+            const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
+            if (achievements.length) { return interaction.followUp({ embeds: [ new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }) ], flags: [MessageFlags.Ephemeral] }); }
+        } catch (err) {
+            console.error(`[handleExercise] Error for ${user.id}:`, err);
+            return interaction.editReply({ content: '❌ Error logging exercise. Check logs.' });
+        }
     }
     async handleProtein(interaction) {
         const { guild, user, options } = interaction; const sub = options.getSubcommand(); const tU = options.getUser('user') || user;
@@ -495,9 +569,16 @@ class CommandHandler {
     }
     async handleJunk(interaction) {
         const { guild, user, options } = interaction; const item = options.getString('item', true); const d = DEDUCTIONS[item]; const msgs = ["Balance is key!", "One step back, two forward!", "Honesty is progress!", "Treats happen!", "Acknowledge and move on!"]; const msg = msgs[Math.floor(Math.random()*msgs.length)];
-        this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'junk', amount: -d.points, reason: `junk:${item}` }); const uR = this.db.stmts.getUser.get(guild.id, user.id); const t = uR?.total||0;
-        const e = new EmbedBuilder().setColor(0xED4245).setDescription(`${user} logged ${d.emoji} **${d.label}** (-**${formatNumber(d.points)}** pts).`).addFields({ name: "Total", value: `🏆 ${formatNumber(t)}` }).setFooter({ text: `${msg} | PID: ${BOT_PROCESS_ID}` });
-        return interaction.editReply({ content:'', embeds: [e] });
+        
+        try {
+            this.db.modifyPoints({ guildId: guild.id, userId: user.id, category: 'junk', amount: -d.points, reason: `junk:${item}` }); 
+            const uR = this.db.stmts.getUser.get(guild.id, user.id); const t = uR?.total||0;
+            const e = new EmbedBuilder().setColor(0xED4245).setDescription(`${user} logged ${d.emoji} **${d.label}** (-**${formatNumber(d.points)}** pts).`).addFields({ name: "Total", value: `🏆 ${formatNumber(t)}` }).setFooter({ text: `${msg} | PID: ${BOT_PROCESS_ID}` });
+            return interaction.editReply({ content:'', embeds: [e] });
+        } catch (err) {
+            console.error(`[handleJunk] Error for ${user.id}:`, err);
+            return interaction.editReply({ content: '❌ Error logging junk food. Check logs.' });
+        }
     }
     async handleMyScore(interaction) {
         const { guild, options } = interaction; const tU = options.getUser('user') || interaction.user;
@@ -546,7 +627,21 @@ class CommandHandler {
         if (sub === 'show_table') { const tN=options.getString('table_name',true); const aT=['points','points_log','cooldowns','buddies','achievements','protein_log','reminders']; if (!aT.includes(tN)) { return interaction.editReply({content:'❌ Invalid table.', flags:[MessageFlags.Ephemeral]}); } try { let oB=''; if(['points_log','protein_log','reminders'].includes(tN)) oB='ORDER BY id DESC'; else if (tN==='points') oB='ORDER BY total DESC'; const rows=this.db.db.prepare(`SELECT * FROM ${tN} ${oB} LIMIT 30`).all(); if(rows.length===0) { return interaction.editReply({content:`✅ Table \`${tN}\` empty.`, flags:[MessageFlags.Ephemeral]}); } const data=JSON.stringify(rows,null,2); if(Buffer.byteLength(data,'utf8') > 20*1024*1024) { return interaction.editReply({content:`❌ Data > 20MB.`, flags:[MessageFlags.Ephemeral]}); } const att=new AttachmentBuilder(Buffer.from(data), {name:`${tN}_dump.json`}); return interaction.editReply({content:`✅ Top/last 30 from \`${tN}\`:`, files:[att], flags:[MessageFlags.Ephemeral]}); } catch (err) { console.error(`Err show table ${tN}:`, err); return interaction.editReply({content:`❌ Error fetching. Check logs.`, flags:[MessageFlags.Ephemeral]}); } }
         if (sub === 'download_all_tables') { return this.handleDownloadAllTables(interaction); }
         if (!targetUser && ['award', 'deduct', 'add_protein', 'deduct_protein'].includes(sub)) { return interaction.editReply({ content: `User required for '${sub}'.`, flags: [MessageFlags.Ephemeral] }); }
-        if (sub === 'award' || sub === 'deduct') { const amt = options.getNumber('amount', true); const cat = options.getString('category', true); const rsn = options.getString('reason') || `Admin action`; const finalAmt = sub === 'award' ? amt : -amt; this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); const act = sub === 'award' ? 'Awarded' : 'Deducted'; return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` }); }
+        if (sub === 'award' || sub === 'deduct') { 
+            const amt = options.getNumber('amount', true); 
+            const cat = options.getString('category', true); 
+            const rsn = options.getString('reason') || `Admin action`; 
+            const finalAmt = sub === 'award' ? amt : -amt; 
+            
+            try {
+                this.db.modifyPoints({ guildId: guild.id, userId: targetUser.id, category: cat, amount: finalAmt, reason: `admin:${sub}`, notes: rsn }); 
+                const act = sub === 'award' ? 'Awarded' : 'Deducted'; 
+                return interaction.editReply({ content: `✅ ${act} ${formatNumber(Math.abs(amt))} ${cat} points for <@${targetUser.id}>.` });
+            } catch (err) {
+                console.error(`[Admin ${sub}] Error:`, err);
+                return interaction.editReply({ content: `❌ Error ${sub === 'award' ? 'awarding' : 'deducting'} points. Check logs.` });
+            }
+        }
         if (sub === 'add_protein' || sub === 'deduct_protein') {
             let g = options.getNumber('grams', true);
             const rsn = options.getString('reason') || `Admin action`;
@@ -612,7 +707,7 @@ async function main() {
     if (!CONFIG.token || !CONFIG.appId) { console.error('[Startup Error] Missing DISCORD_TOKEN or APPLICATION_ID env vars!'); process.exit(1); }
     let database; try { console.log("[Startup] Initializing database..."); database = new PointsDatabase(CONFIG.dbFile); } catch (e) { console.error("❌ [Startup FATAL] Failed to initialize Database class:", e); process.exit(1); }
     console.log("[Startup] Starting initial data reconciliation..."); reconcileTotals(database.db); console.log("[Startup] Finished reconcileTotals function call.");
-    try { console.log("[Startup] Attempting WAL checkpoint..."); const checkpointResult = database.db.pragma('wal_checkpoint(FULL)'); console.log("[Startup] WAL Checkpoint Result:", checkpointResult); if (checkpointResult?.[0]?.checkpointed > -1) { console.log(`✅ [Startup] Database checkpoint successful (${checkpointResult[0].checkpointed} pages).`); } else { console.warn("⚠️ [Startup] DB checkpoint command executed but result unexpected:", checkpointResult); } } catch (e) { console.error("❌ [Startup Error] Database checkpoint failed:", e); }
+    try { console.log("[Startup] Attempting WAL checkpoint..."); const checkpointResult = database.db.pragma('wal_checkpoint(FULL)'); console.log("[Startup] WAL Checkpoint Result:", checkpointResult); if (checkpointResult?.[0]?.checkpointed > -1) { console.log(`✅ [Startup] Database checkpoint successful (${checkpointResult[0].checkpointed} pages).`); } else { console.warn("⚠️ [Startup] DB checkpoint command executed but result unexpected:",checkpointResult); } } catch (e) { console.error("❌ [Startup Error] Database checkpoint failed:", e); }
     console.log("[Startup] Initializing CommandHandler..."); const handler = new CommandHandler(database);
     console.log("[Startup] Initializing REST client and registering commands..."); const rest = new REST({ version: '10' }).setToken(CONFIG.token);
     try { const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId); await rest.put(route, { body: buildCommands() }); console.log('✅ [Startup] Registered application commands.'); }
@@ -687,7 +782,6 @@ async function main() {
     process.on('SIGINT', shutdown); 
     process.on('SIGTERM', shutdown);
     
-    // Handle uncaught errors to prevent silent data loss
     process.on('uncaughtException', (err) => {
         console.error('❌ [UNCAUGHT EXCEPTION]', err);
         console.log('[Emergency] Attempting to close database...');
@@ -710,5 +804,3 @@ async function main() {
 }
 
 main().catch(err => { console.error('❌ [FATAL ERROR] Uncaught error in main function:', err); process.exit(1); });
-	
-	
