@@ -1,7 +1,7 @@
-// pointsbot.js - Final Code with WAL Checkpoint Fixes and Leaderboard Fix
+// pointsbot.js - Final Audited & Corrected Version
 import 'dotenv/config';
-import http from 'node:http'; // Ensure http is imported
-import crypto from 'node:crypto'; // Use crypto for UUID
+import http from 'node:http';
+import crypto from 'node:crypto';
 import {
     Client, GatewayIntentBits, REST, Routes,
     SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits, MessageFlags
@@ -26,7 +26,6 @@ const CONFIG = {
     dbFile: (process.env.DB_PATH || path.join(__dirname, 'data', 'points.db')).trim(),
 };
 
-// --- Constants (PROTEIN_SOURCES, COOLDOWNS, POINTS, etc.) ---
 const PROTEIN_SOURCES = {
     chicken_breast: { name: 'Chicken Breast (Cooked)', unit: 'gram', protein_per_unit: 0.31 }, chicken_thigh: { name: 'Chicken Thigh (Cooked)', unit: 'gram', protein_per_unit: 0.26 }, ground_beef: { name: 'Ground Beef 85/15 (Cooked)', unit: 'gram', protein_per_unit: 0.26 }, steak: { name: 'Steak (Sirloin, Cooked)', unit: 'gram', protein_per_unit: 0.29 }, pork_chop: { name: 'Pork Chop (Cooked)', unit: 'gram', protein_per_unit: 0.27 }, mutton: { name: 'Mutton (Cooked)', unit: 'gram', protein_per_unit: 0.27 }, salmon: { name: 'Salmon (Cooked)', unit: 'gram', protein_per_unit: 0.25 }, tuna: { name: 'Tuna (Canned in water)', unit: 'gram', protein_per_unit: 0.23 }, shrimp: { name: 'Shrimp (Cooked)', unit: 'gram', protein_per_unit: 0.24 }, cod: { name: 'Cod (Cooked)', unit: 'gram', protein_per_unit: 0.26 }, egg: { name: 'Large Egg', unit: 'item', protein_per_unit: 6 }, egg_white: { name: 'Large Egg White', unit: 'item', protein_per_unit: 3.6 }, greek_yogurt: { name: 'Greek Yogurt', unit: 'gram', protein_per_unit: 0.10 }, cottage_cheese: { name: 'Cottage Cheese', unit: 'gram', protein_per_unit: 0.11 }, milk: { name: 'Milk (Dairy)', unit: 'gram', protein_per_unit: 0.034 }, tofu: { name: 'Tofu (Firm)', unit: 'gram', protein_per_unit: 0.08 }, edamame: { name: 'Edamame (Shelled)', unit: 'gram', protein_per_unit: 0.11 }, lentils: { name: 'Lentils (Cooked)', unit: 'gram', protein_per_unit: 0.09 }, dahl: { name: 'Dahl (Cooked Lentils)', unit: 'gram', protein_per_unit: 0.09 }, chickpeas: { name: 'Chickpeas (Cooked)', unit: 'gram', protein_per_unit: 0.09 }, black_beans: { name: 'Black Beans (Cooked)', unit: 'gram', protein_per_unit: 0.08 }, quinoa: { name: 'Quinoa (Cooked)', unit: 'gram', protein_per_unit: 0.04 }, almonds: { name: 'Almonds', unit: 'gram', protein_per_unit: 0.21 }, peanuts: { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 }, protein_powder: { name: 'Protein Powder', unit: 'gram', protein_per_unit: 0.80 }
 };
@@ -92,7 +91,7 @@ class PointsDatabase {
                 catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
             console.log("✅ [DB Migration] Schema addition checks complete.");
-        } catch(e) { console.error("❌ [DB Migration Error] Error during migration checks:", e); }
+         } catch(e) { console.error("❌ [DB Migration Error] Error during migration checks:", e); }
     }
 
     prepareStatements() {
@@ -105,17 +104,19 @@ class PointsDatabase {
             S.setCooldown = this.db.prepare(`INSERT INTO cooldowns (guild_id, user_id, category, last_ms) VALUES (@guild_id, @user_id, @category, @last_ms) ON CONFLICT(guild_id, user_id, category) DO UPDATE SET last_ms = excluded.last_ms`);
             S.getCooldown = this.db.prepare(`SELECT last_ms FROM cooldowns WHERE guild_id = ? AND user_id = ? AND category = ?`);
             
-            // --- LEADERBOARD FIX ---
-            // Changed `total > 0` to `total >= 0` to include users with 0 points
+            // --- LEADERBOARD FIX: Show users with 0 points ---
             S.lbAllFromPoints = this.db.prepare(`SELECT user_id as userId, total as score FROM points WHERE guild_id=? AND total >= 0 ORDER BY total DESC LIMIT 10`);
             
-            ALL_POINT_COLUMNS.forEach(col => {
-                // Keep category leaderboards as `> 0` (no need to show 0-point entries)
-                S[`lbAllCatFromPoints_${col}`] = this.db.prepare(`SELECT user_id as userId, ${col} as score FROM points WHERE guild_id=? AND ${col} > 0 ORDER BY ${col} DESC LIMIT 10`);
-            });
-            // -------------------------
+            ALL_POINT_COLUMNS.forEach(col => { S[`lbAllCatFromPoints_${col}`] = this.db.prepare(`SELECT user_id as userId, ${col} as score FROM points WHERE guild_id=? AND ${col} > 0 ORDER BY ${col} DESC LIMIT 10`); });
+            
+            S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total >= 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`);
+            // ----------------------------------------------------
 
-            S.selfRankAllFromPoints = this.db.prepare(`WITH ranks AS ( SELECT user_id, total, RANK() OVER (ORDER BY total DESC) rk FROM points WHERE guild_id=? AND total >= 0 ) SELECT rk as rank, total as score FROM ranks WHERE user_id=?`); // Also changed to >= 0
+            // --- *** START FIX *** ---
+            // Add prepared statement for recalculating a single user's total
+            S.recalcUserTotal = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = @guild_id AND user_id = @user_id`);
+            // --- *** END FIX *** ---
+
             S.lbSince = this.db.prepare(`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts >= ? AND ts < ? AND amount <> 0 GROUP BY user_id HAVING SUM(amount) <> 0 ORDER BY score DESC LIMIT 10`);
             S.getTopStreaks = this.db.prepare(`SELECT user_id as userId, current_streak as score FROM points WHERE guild_id = ? AND current_streak > 0 ORDER BY current_streak DESC LIMIT 10`);
             S.getBuddy = this.db.prepare(`SELECT buddy_id FROM buddies WHERE guild_id = ? AND user_id = ?`);
@@ -146,24 +147,31 @@ class PointsDatabase {
     }
 
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
+      // Ensure user exists first
       this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
+      
       const modAmount = Number(amount) || 0;
       if (modAmount === 0) return [];
+      
       const safeCols = ALL_POINT_COLUMNS; let logCategory = category, targetCol = category;
       if (EXERCISE_CATEGORIES.includes(category)) { targetCol = 'exercise'; }
       else if (category === 'junk') { const up = this.stmts.getUser.get(guildId, userId) || {}; targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise'; }
       else if (!safeCols.includes(category)) { console.warn(`[modifyPoints Warn] Unknown category '${category}'`); targetCol = null; }
       
+      // Update the specific category column (e.g., 'exercise')
       if (targetCol && safeCols.includes(targetCol)) {
           const stmt = this.db.prepare(`UPDATE points SET ${targetCol} = MAX(0, ${targetCol} + @amt), updated_at = strftime('%s','now') WHERE guild_id = @gid AND user_id = @uid`);
           stmt.run({ amt: modAmount, gid: guildId, uid: userId });
       }
       
-      const recalc = this.db.prepare(`UPDATE points SET total = MAX(0, ${ALL_POINT_COLUMNS.map(col => `COALESCE(${col}, 0)`).join(' + ')}) WHERE guild_id = ? AND user_id = ?`);
-      recalc.run(guildId, userId);
+      // --- *** START FIX *** ---
+      // Recalculate total for the user using the prepared statement
+      // This ensures the 'total' column is immediately consistent
+      this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
+      // --- *** END FIX *** ---
 
       // --- STALE SCORE FIX ---
-      // Force the database changes to be written to the main file *before* replying.
+      // Force the database changes to be written to the main file *before* logging or returning
       try {
           this.db.pragma('wal_checkpoint(FULL)');
       } catch (cpErr) {
@@ -215,15 +223,12 @@ function reconcileTotals(db) {
     const categorySums = ALL_POINT_COLUMNS.map(col => {
          if (col === 'exercise') { return `SUM(CASE WHEN category IN (${exerciseCase}) THEN amount ELSE 0 END) as exercise`; }
          else { return `SUM(CASE WHEN category = '${col}' THEN amount ELSE 0 END) as ${col}`; }
-     }).join(',\n        ');
-
+      }).join(',\n        ');
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categorySums} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
-
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
     const ensureUserStmt = db.prepare(`INSERT INTO points (guild_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`);
-
     const guilds = db.prepare(`SELECT DISTINCT guild_id FROM points`).all();
      console.log(`[Reconcile] Found ${guilds.length} distinct guilds in points table to reset.`);
 
@@ -498,6 +503,7 @@ async function main() {
     try { const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId); await rest.put(route, { body: buildCommands() }); console.log('✅ [Startup] Registered application commands.'); }
     catch (err) { console.error('❌ [Startup Error] Command registration failed:', err); if (err.rawError) console.error('Validation Errors:', JSON.stringify(err.rawError, null, 2)); else if (err.errors) console.error('Validation Errors:', JSON.stringify(err.errors, null, 2)); process.exit(1); }
     console.log("[Startup] Initializing Discord Client..."); const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+
     client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
 
     // --- InteractionCreate Handler ---
@@ -548,7 +554,6 @@ async function main() {
 
     const shutdown = (signal) => { console.log(`[Shutdown] Received ${signal}. Shutting down...`); isBotReady = false; console.log('[Shutdown] Destroying Discord client...'); client?.destroy(); setTimeout(() => { console.log('[Shutdown] Closing database...'); database?.close(); console.log("[Shutdown] Exiting."); process.exit(0); }, 1500); };
     process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
-
     console.log("[Startup] Attempting client login..."); await client.login(CONFIG.token); console.log("[Startup] client.login() resolved. Waiting for 'clientReady'...");
 }
 
