@@ -1,4 +1,4 @@
-// pointsbot.js - Final Audited & Corrected Version (With Junk Fix)
+// pointsbot.js - FINAL VERSION WITH DATA LOSS PREVENTION
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BOT_PROCESS_ID = process.pid;
 
-let isBotReady = false; // Readiness Flag
+let isBotReady = false;
 
 /* =========================
     CONFIG & CONSTANTS
@@ -45,22 +45,77 @@ const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','car
 const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES];
 
 /* =========================
-    DATABASE CLASS
+    DATABASE CLASS WITH DATA PROTECTION
 ========================= */
 class PointsDatabase {
     constructor(dbPath) {
         try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (err) { if (err.code !== 'EEXIST') console.error('[DB Error] Could not create data directory:', err); }
+        
+        // *** CRITICAL: Check for multiple instances ***
+        const lockFile = path.join(path.dirname(dbPath), '.bot.lock');
+        try {
+            if (fs.existsSync(lockFile)) {
+                const lockData = fs.readFileSync(lockFile, 'utf8');
+                console.error(`❌ [DB FATAL] Another bot instance is already running (PID: ${lockData})`);
+                console.error('❌ Please stop the other instance before starting a new one!');
+                process.exit(1);
+            }
+            fs.writeFileSync(lockFile, String(BOT_PROCESS_ID));
+            console.log(`✅ [DB] Created lock file for PID ${BOT_PROCESS_ID}`);
+        } catch (lockErr) {
+            console.error('[DB Error] Could not create lock file:', lockErr);
+        }
+        
         try {
             this.db = new Database(dbPath);
             this.db.pragma('journal_mode = WAL');
             this.db.pragma('foreign_keys = ON');
             console.log("✅ [DB] Database connection opened successfully.");
-        } catch (dbErr) { console.error("❌ [DB FATAL] Could not open database file:", dbErr); process.exit(1); }
+            
+            // *** INTEGRITY CHECK ***
+            const integrityCheck = this.db.prepare('PRAGMA integrity_check').get();
+            if (integrityCheck.integrity_check === 'ok') {
+                console.log("✅ [DB] Database integrity check passed.");
+            } else {
+                console.error("❌ [DB WARNING] Database integrity issues detected:", integrityCheck);
+            }
+        } catch (dbErr) { 
+            console.error("❌ [DB FATAL] Could not open database file:", dbErr); 
+            process.exit(1); 
+        }
 
         this.initSchema();
         this.performMigrations();
         this.prepareStatements();
+        this.createBackup(); // Backup before any operations
         console.log("✅ [DB] Database class initialized.");
+    }
+
+    createBackup() {
+        try {
+            const backupDir = path.join(path.dirname(CONFIG.dbFile), 'backups');
+            fs.mkdirSync(backupDir, { recursive: true });
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            const backupFile = path.join(backupDir, `points_backup_${timestamp}.db`);
+            
+            // Only keep last 5 backups
+            const backups = fs.readdirSync(backupDir)
+                .filter(f => f.startsWith('points_backup_'))
+                .sort()
+                .reverse();
+            
+            if (backups.length >= 5) {
+                for (let i = 4; i < backups.length; i++) {
+                    fs.unlinkSync(path.join(backupDir, backups[i]));
+                }
+            }
+            
+            this.db.backup(backupFile);
+            console.log(`✅ [DB] Backup created: ${backupFile}`);
+        } catch (err) {
+            console.error('[DB Error] Could not create backup:', err);
+        }
     }
 
     initSchema() {
@@ -86,10 +141,36 @@ class PointsDatabase {
     performMigrations() {
          try {
             console.log("🔄 [DB Migration] Checking for necessary schema additions...");
+            
+            // Add chore columns
             CHORE_CATEGORIES.forEach(c => {
                 try { this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); }
                 catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
+            
+            // *** FIX MILLISECOND TIMESTAMPS ***
+            console.log("🔄 [DB Migration] Fixing millisecond timestamps in points_log...");
+            try {
+                // Find entries with timestamps in milliseconds (> year 2038 in unix seconds)
+                const badEntries = this.db.prepare(`SELECT id, ts FROM points_log WHERE ts > 2147483647`).all();
+                console.log(`[Migration] Found ${badEntries.length} entries with millisecond timestamps`);
+                
+                if (badEntries.length > 0) {
+                    const fixStmt = this.db.prepare(`UPDATE points_log SET ts = ? WHERE id = ?`);
+                    const tx = this.db.transaction((entries) => {
+                        for (const entry of entries) {
+                            const fixedTs = Math.floor(entry.ts / 1000);
+                            fixStmt.run(fixedTs, entry.id);
+                            console.log(`[Migration] Fixed entry ${entry.id}: ${entry.ts} → ${fixedTs}`);
+                        }
+                    });
+                    tx(badEntries);
+                    console.log(`✅ [Migration] Fixed ${badEntries.length} timestamp entries`);
+                }
+            } catch (e) {
+                console.error(`[DB Migration Error] Timestamp fix failed:`, e);
+            }
+            
             console.log("✅ [DB Migration] Schema addition checks complete.");
          } catch(e) { console.error("❌ [DB Migration Error] Error during migration checks:", e); }
     }
@@ -160,16 +241,24 @@ class PointsDatabase {
       this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
 
       try {
-          this.db.pragma('wal_checkpoint(FULL)');
+          this.db.pragma('wal_checkpoint(PASSIVE)');
       } catch (cpErr) {
           console.error(`[modifyPoints DB Error] WAL Checkpoint failed for ${userId}:`, cpErr);
       }
 
       const eventKey = crypto.randomUUID();
+      const timestampSeconds = Math.floor(Date.now() / 1000); // CRITICAL: Always use seconds
+      
       try {
-          const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, Math.floor(Date.now() / 1000), reason, notes, eventKey);
-          if (info.changes === 0 && this.db.inTransaction === false) { console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); }
-      } catch (err) { console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); }
+          const info = this.stmts.logPoints.run(guildId, userId, logCategory, modAmount, timestampSeconds, reason, notes, eventKey);
+          if (info.changes === 0 && this.db.inTransaction === false) { 
+              console.log(`[DB] Duplicate event likely prevented by ON CONFLICT: ${eventKey.substring(0,8)}...`); 
+          } else {
+              console.log(`[DB] Logged points for ${userId}: ${modAmount} ${logCategory} (ts: ${timestampSeconds}, eventKey: ${eventKey.substring(0,8)}...)`);
+          }
+      } catch (err) { 
+          console.error(`[DB Error] Failed to log points for ${userId} (UUID: ${eventKey.substring(0,8)}...):`, err); 
+      }
       
       if (modAmount > 0) { this.updateStreak(guildId, userId); return this.checkAchievements(guildId, userId); }
       return [];
@@ -197,11 +286,25 @@ class PointsDatabase {
         try {const s = this.stmts.getUser.get(guildId, userId); if (!s) return []; const u = this.stmts.getUserAchievements.all(guildId, userId).map(r => r.achievement_id); const f = []; for (const a of ACHIEVEMENTS) { if (!u.includes(a.id) && a.requirement(s)) { this.stmts.unlockAchievement.run(guildId, userId, a.id); f.push(a); console.log(`[Achievement] User ${userId} unlocked: ${a.name}`); } } return f;} catch(e){ console.error(`[DB Error] Failed checkAchievements ${guildId}/${userId}:`,e); return[];}
     }
     close() {
-        try {if (this.db) {this.db.close(); console.log("[DB] Database connection closed.");}} catch(e){console.error("[DB Error] Error closing DB:", e);}
+        try {
+            // Remove lock file
+            const lockFile = path.join(path.dirname(CONFIG.dbFile), '.bot.lock');
+            if (fs.existsSync(lockFile)) {
+                fs.unlinkSync(lockFile);
+                console.log('[DB] Removed lock file.');
+            }
+            
+            if (this.db) {
+                this.db.close(); 
+                console.log("[DB] Database connection closed.");
+            }
+        } catch(e){
+            console.error("[DB Error] Error closing DB:", e);
+        }
     }
 }
 
-// --- *** FIXED RECONCILE WITH JUNK HANDLING *** ---
+// --- *** FIXED RECONCILE WITH JUNK HANDLING AND BETTER LOGGING *** ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
@@ -225,12 +328,12 @@ function reconcileTotals(db) {
     const logTotals = db.prepare(`SELECT guild_id, user_id, ${categoryWithJunk} FROM points_log GROUP BY guild_id, user_id`).all();
     console.log(`[Reconcile] Fetched ${logTotals.length} user category sums from points_log.`);
 
-    const vidyaData = logTotals.find(r => r.user_id === '1429443296031150142');
-    if (vidyaData) {
-        console.log(`[Reconcile DEBUG] Vidya's data from log:`, JSON.stringify(vidyaData, null, 2));
-    } else {
-        console.log(`[Reconcile DEBUG] Vidya NOT FOUND in logTotals!`);
-    }
+    // Debug logging for all users
+    console.log(`[Reconcile DEBUG] All users from log:`);
+    logTotals.forEach(row => {
+        const total = ALL_POINT_COLUMNS.reduce((sum, col) => sum + (row[col] || 0), 0) + (row.junk_total || 0);
+        console.log(`  - User ${row.user_id.substring(0, 8)}...: total=${total}, junk=${row.junk_total || 0}`);
+    });
 
     const resetStmt = db.prepare(`UPDATE points SET total = 0, ${ALL_POINT_COLUMNS.map(c => `${c} = 0`).join(', ')} WHERE guild_id = ?`);
     const upsertStmt = db.prepare(`INSERT INTO points (guild_id, user_id, total, ${ALL_POINT_COLUMNS.join(', ')}) VALUES (@guild_id, @user_id, @total, ${ALL_POINT_COLUMNS.map(c=>`@${c}`).join(', ')}) ON CONFLICT(guild_id, user_id) DO UPDATE SET total = excluded.total, ${ALL_POINT_COLUMNS.map(c => `${c} = excluded.${c}`).join(', ')}, updated_at = strftime('%s','now')`);
@@ -254,15 +357,7 @@ function reconcileTotals(db) {
         const upsertData = { guild_id: row.guild_id, user_id: row.user_id, total: Math.max(0, calculatedTotal) };
         ALL_POINT_COLUMNS.forEach(col => { upsertData[col] = Math.max(0, row[col] || 0); });
                 
-        if (row.user_id === '1429443296031150142') {
-            console.log(`[Reconcile DEBUG] Upserting Vidya with data:`, JSON.stringify(upsertData, null, 2));
-        }
-        
-        // Debug log for Re (user who had junk deduction)
-        if (row.user_id === '1097459423053615176') {
-            console.log(`[Reconcile DEBUG] Re's data from log:`, JSON.stringify(row, null, 2));
-            console.log(`[Reconcile DEBUG] Upserting Re with data:`, JSON.stringify(upsertData, null, 2));
-        }
+        console.log(`[Reconcile] Upserting user ${row.user_id.substring(0,8)}...: total=${upsertData.total}, gym=${upsertData.gym}, exercise=${upsertData.exercise}, junk_applied=${row.junk_total || 0}`);
                 
         upsertStmt.run(upsertData);
         upsertCount++;
@@ -409,7 +504,7 @@ class CommandHandler {
         const uR = this.db.stmts.getUser.get(guild.id, tU.id) || { total: 0, current_streak: 0 }; const { pct, cur, need } = nextRankProgress(uR.total);
         const ach = this.db.stmts.getUserAchievements.all(guild.id, tU.id).map(r => r.achievement_id);
         const e = new EmbedBuilder().setColor(cur.color).setAuthor({ name: tU.displayName, iconURL: tU.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields({ name: 'Points', value: formatNumber(uR.total), inline: true }, { name: 'Streak', value: `🔥 ${uR.current_streak || 0}d`, inline: true }, { name: 'Progress', value: progressBar(pct), inline: false }, { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' });
-        let fT = `PID: ${BOT_PROCESS_ID}`; if (need > 0) fT = `${formatNumber(need)} pts to next rank ! | ${fT}`; e.setFooter({ text: fT });
+        let fT = `PID: ${BOT_PROCESS_ID}`; if (need > 0) fT = `${formatNumber(need)} pts to next rank! | ${fT}`; e.setFooter({ text: fT });
         return interaction.editReply({ content:'', embeds: [e] });
     }
     async handleLeaderboard(interaction) {
@@ -524,7 +619,7 @@ async function main() {
     catch (err) { console.error('❌ [Startup Error] Command registration failed:', err); if (err.rawError) console.error('Validation Errors:', JSON.stringify(err.rawError, null, 2)); else if (err.errors) console.error('Validation Errors:', JSON.stringify(err.errors, null, 2)); process.exit(1); }
     console.log("[Startup] Initializing Discord Client..."); const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-    client.once('clientReady', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
+    client.once('ready', (c) => { console.log(`✅ [Discord] Client is Ready! Logged in as ${c.user.tag}. PID: ${BOT_PROCESS_ID}`); console.log("[Startup] Setting isBotReady = true"); isBotReady = true; setInterval(async () => { if (!isBotReady) return; try { const now = Date.now(); const due = database.stmts.getDueReminders.all(now); for (const r of due) { try { const u = await client.users.fetch(r.user_id); await u.send(`⏰ Reminder: **${r.activity}**!`); } catch (e) { if (e.code !== 50007) { console.error(`[Reminder Error] DM fail for reminder ${r.id} to user ${r.user_id}: ${e.message} (Code: ${e.code})`); } } finally { database.stmts.deleteReminder.run(r.id); } } } catch (e) { console.error("❌ [Reminder Error] Error checking reminders:", e); } }, 60000); });
 
     client.on('interactionCreate', async (interaction) => {
         const receivedTime = Date.now();
@@ -557,7 +652,13 @@ async function main() {
                     case 'nudge': await handler.handleNudge(interaction); break;
                     case 'remind': await handler.handleRemind(interaction); break;
                     case 'admin': await handler.handleAdmin(interaction); break;
-                    case 'recalculate': console.log("[Cmd] /recalculate"); reconcileTotals(database.db); database.db.pragma('wal_checkpoint(FULL)'); console.log("[Cmd] Recalc complete."); await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` }); break;
+                    case 'recalculate': 
+                        console.log("[Cmd] /recalculate"); 
+                        reconcileTotals(database.db); 
+                        database.db.pragma('wal_checkpoint(FULL)'); 
+                        console.log("[Cmd] Recalc complete."); 
+                        await interaction.editReply({ content: `✅ Totals recalculated! | PID: ${BOT_PROCESS_ID}` }); 
+                        break;
                     case 'db_download': console.log("[Cmd] /db_download"); await handler.handleDbDownload(interaction); break;
                     default: console.warn(`[Cmd Warn] Unhandled: ${commandName}`); await interaction.editReply({ content: "Unknown cmd."});
                 }
@@ -566,15 +667,48 @@ async function main() {
             const errorTime = Date.now(); console.error(`❌ [Interaction Error] Cmd /${interaction.commandName} by ${interaction.user.tag} at ${errorTime} (Total: ${errorTime - receivedTime}ms):`, err);
             if (!initialReplySuccessful && err.code === 10062) { console.error("❌ CRITICAL: Initial ack failed (10062). Cannot proceed."); return; }
             const errorReply = { content: `❌ Error processing command. Check logs.`}; const errorReplyEphemeral = { ...errorReply, flags: [MessageFlags.Ephemeral]};
-            try { if (initialReplySuccessful) { await interaction.editReply(errorReply).catch(editErr => { console.error("❌ Failed editReply w/ error:", editErr); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after edit fail:", followUpErr); }); }); } else { console.warn("[Warn] Initial reply failed (not 10062). Attempting followup."); interaction
-			.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after non-10062 initial fail:", followUpErr); }); } }
+            try { if (initialReplySuccessful) { await interaction.editReply(errorReply).catch(editErr => { console.error("❌ Failed editReply w/ error:", editErr); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after edit fail:", followUpErr); }); }); } else { console.warn("[Warn] Initial reply failed (not 10062). Attempting followup."); interaction.followUp(errorReplyEphemeral).catch(followUpErr => { console.error("❌ Failed followup after non-10062 initial fail:", followUpErr); }); } }
             catch (e) { console.error("❌ CRITICAL: Error sending error reply:", e); }
         }
     });
 
-    const shutdown = (signal) => { console.log(`[Shutdown] Received ${signal}. Shutting down...`); isBotReady = false; console.log('[Shutdown] Destroying Discord client...'); client?.destroy(); setTimeout(() => { console.log('[Shutdown] Closing database...'); database?.close(); console.log("[Shutdown] Exiting."); process.exit(0); }, 1500); };
-    process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
-    console.log("[Startup] Attempting client login..."); await client.login(CONFIG.token); console.log("[Startup] client.login() resolved. Waiting for 'clientReady'...");
+    const shutdown = (signal) => { 
+        console.log(`[Shutdown] Received ${signal}. Shutting down...`); 
+        isBotReady = false; 
+        console.log('[Shutdown] Destroying Discord client...'); 
+        client?.destroy(); 
+        setTimeout(() => { 
+            console.log('[Shutdown] Closing database...'); 
+            database?.close(); 
+            console.log("[Shutdown] Exiting."); 
+            process.exit(0); 
+        }, 1500); 
+    };
+    process.on('SIGINT', shutdown); 
+    process.on('SIGTERM', shutdown);
+    
+    // Handle uncaught errors to prevent silent data loss
+    process.on('uncaughtException', (err) => {
+        console.error('❌ [UNCAUGHT EXCEPTION]', err);
+        console.log('[Emergency] Attempting to close database...');
+        try {
+            database?.db.pragma('wal_checkpoint(FULL)');
+            database?.close();
+        } catch (closeErr) {
+            console.error('[Emergency] Failed to close database:', closeErr);
+        }
+        process.exit(1);
+    });
+    
+    process.on('unhandledRejection', (reason, promise) => {
+        console.error('❌ [UNHANDLED REJECTION]', reason);
+    });
+    
+    console.log("[Startup] Attempting client login..."); 
+    await client.login(CONFIG.token); 
+    console.log("[Startup] client.login() resolved. Waiting for 'ready'...");
 }
 
 main().catch(err => { console.error('❌ [FATAL ERROR] Uncaught error in main function:', err); process.exit(1); });
+	
+	
