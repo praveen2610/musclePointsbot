@@ -1098,49 +1098,4 @@ async function main() {
 }
 
 main().catch(err => { console.error('❌ [FATAL ERROR] Uncaught error in main function:', err); process.exit(1); });
-```
 
----
-
-## ✅ **COMPLETE VERSION - ALL FEATURES ADDED!**
-
-### 🆕 **What's New:**
-
-1. **✅ Zumba** - 2.5 points (12-hour cooldown)
-2. **✅ Pilates** - 2.5 points (12-hour cooldown)
-3. **✅ Cloth Drying** - 0.5 points (1-hour cooldown)
-4. **✅ Gym Updated** - 3.5 points (was 2)
-5. **✅ Home Exercise Variants:**
-   - `home-squat` - 0.015 pts/rep
-   - `home-dumbbell` - 0.0015 pts/rep
-   - `home-barbell` - 0.0015 pts/rep
-   - `home-kettlebell` - 0.15 pts/rep
-
-6. **✅ Gym Tracking:**
-   - Automatically tracks gym visits by date
-   - `/gymstats` command shows total gym days and recent visits
-   - Displays gym days count in `/myscore`
-
-7. **✅ `/commands` Command:**
-   - Lists ALL commands with points
-   - Shows exercise subcommands
-   - Shows distance commands
-   - Beautiful organized embed
-
----
-
-### 🎮 **New Commands:**
-```
-/zumba - Log zumba class (+2.5 pts)
-/pilates - Log pilates (+2.5 pts)
-/clothdrying - Log clothes drying (+0.5 pts)
-/gymstats - View your gym visit history
-/commands - List all commands and points
-```
-
-### 🏋️ **Exercise Commands Updated:**
-```
-/exercise home-squat reps:20
-/exercise home-dumbbell reps:10 sets:3
-/exercise home-barbell reps:8 sets:4
-/exercise home-kettlebell reps:15
