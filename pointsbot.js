@@ -1,4 +1,4 @@
-// pointsbot.js - FINAL FIX FOR DATA LOSS ISSUE
+// pointsbot.js - COMPLETE VERSION WITH ZUMBA, PILATES, HOME EXERCISES & GYM TRACKING
 import 'dotenv/config';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -29,29 +29,92 @@ const CONFIG = {
 const PROTEIN_SOURCES = {
     chicken_breast: { name: 'Chicken Breast (Cooked)', unit: 'gram', protein_per_unit: 0.31 }, chicken_thigh: { name: 'Chicken Thigh (Cooked)', unit: 'gram', protein_per_unit: 0.26 }, ground_beef: { name: 'Ground Beef 85/15 (Cooked)', unit: 'gram', protein_per_unit: 0.26 }, steak: { name: 'Steak (Sirloin, Cooked)', unit: 'gram', protein_per_unit: 0.29 }, pork_chop: { name: 'Pork Chop (Cooked)', unit: 'gram', protein_per_unit: 0.27 }, mutton: { name: 'Mutton (Cooked)', unit: 'gram', protein_per_unit: 0.27 }, salmon: { name: 'Salmon (Cooked)', unit: 'gram', protein_per_unit: 0.25 }, tuna: { name: 'Tuna (Canned in water)', unit: 'gram', protein_per_unit: 0.23 }, shrimp: { name: 'Shrimp (Cooked)', unit: 'gram', protein_per_unit: 0.24 }, cod: { name: 'Cod (Cooked)', unit: 'gram', protein_per_unit: 0.26 }, egg: { name: 'Large Egg', unit: 'item', protein_per_unit: 6 }, egg_white: { name: 'Large Egg White', unit: 'item', protein_per_unit: 3.6 }, greek_yogurt: { name: 'Greek Yogurt', unit: 'gram', protein_per_unit: 0.10 }, cottage_cheese: { name: 'Cottage Cheese', unit: 'gram', protein_per_unit: 0.11 }, milk: { name: 'Milk (Dairy)', unit: 'gram', protein_per_unit: 0.034 }, tofu: { name: 'Tofu (Firm)', unit: 'gram', protein_per_unit: 0.08 }, edamame: { name: 'Edamame (Shelled)', unit: 'gram', protein_per_unit: 0.11 }, lentils: { name: 'Lentils (Cooked)', unit: 'gram', protein_per_unit: 0.09 }, dahl: { name: 'Dahl (Cooked Lentils)', unit: 'gram', protein_per_unit: 0.09 }, chickpeas: { name: 'Chickpeas (Cooked)', unit: 'gram', protein_per_unit: 0.09 }, black_beans: { name: 'Black Beans (Cooked)', unit: 'gram', protein_per_unit: 0.08 }, quinoa: { name: 'Quinoa (Cooked)', unit: 'gram', protein_per_unit: 0.04 }, almonds: { name: 'Almonds', unit: 'gram', protein_per_unit: 0.21 }, peanuts: { name: 'Peanuts', unit: 'gram', protein_per_unit: 0.26 }, protein_powder: { name: 'Protein Powder', unit: 'gram', protein_per_unit: 0.80 }
 };
-const COOLDOWNS = { gym: 43200000, badminton: 43200000, cricket: 43200000, swimming: 43200000, yoga: 43200000, exercise: 1800000, cooking: 3600000, sweeping: 3600000, gardening: 3600000, carwash: 3600000, toiletcleaning: 3600000, dishwashing: 3600000 };
-const POINTS = { gym: 2, badminton: 5, cricket: 5, swimming: 3, yoga: 2, cooking: 2, sweeping: 2, gardening: 2, carwash: 2, toiletcleaning: 5, dishwashing: 2 };
+
+// UPDATED POINTS AND COOLDOWNS
+const COOLDOWNS = { 
+    gym: 43200000, // 12 hours
+    badminton: 43200000, 
+    cricket: 43200000, 
+    swimming: 43200000, 
+    yoga: 43200000, 
+    zumba: 43200000, 
+    pilates: 43200000, 
+    exercise: 1800000, // 30 mins
+    cooking: 3600000, 
+    sweeping: 3600000, 
+    gardening: 3600000, 
+    carwash: 3600000, 
+    toiletcleaning: 3600000, 
+    dishwashing: 3600000, 
+    clothdrying: 3600000 
+};
+
+const POINTS = { 
+    gym: 3.5, // UPDATED
+    badminton: 5, 
+    cricket: 5, 
+    swimming: 3, 
+    yoga: 2, 
+    zumba: 2.5, // NEW
+    pilates: 2.5, // NEW
+    cooking: 2, 
+    sweeping: 2, 
+    gardening: 2, 
+    carwash: 2, 
+    toiletcleaning: 5, 
+    dishwashing: 2, 
+    clothdrying: 0.5 
+};
+
 const EXERCISE_RATES = { per_rep: 0.002 };
 const DISTANCE_RATES = { walking: 0.5, jogging: 0.6, running: 0.7 };
-const REP_RATES = { squat: 0.02, kettlebell: 0.2, lunge: 0.2, pushup: 0.02 };
-const PLANK_RATE_PER_MIN = 1; const PLANK_MIN_MIN = 0.75;
+const REP_RATES = { 
+    squat: 0.02, 
+    'home-squat': 0.015, // HOME VERSION
+    kettlebell: 0.2, 
+    'home-kettlebell': 0.15, // HOME VERSION
+    lunge: 0.2, 
+    pushup: 0.02,
+    'home-dumbbell': 0.0015, // HOME VERSION
+    'home-barbell': 0.0015 // HOME VERSION
+};
+const PLANK_RATE_PER_MIN = 1; 
+const PLANK_MIN_MIN = 0.75;
+
 const DEDUCTIONS = {
     chocolate: { points: 2, emoji: '🍫', label: 'Chocolate' }, fries: { points: 3, emoji: '🍟', label: 'Fries' }, soda: { points: 2, emoji: '🥤', label: 'Soda / Soft Drink' }, pizza: { points: 4, emoji: '🍕', label: 'Pizza Slice' }, burger: { points: 3, emoji: '🍔', label: 'Burger' }, sweets: { points: 2, emoji: '🍬', label: 'Sweets / Candy' }, chips: { points: 2, emoji: '🥔', label: 'Chips (Packet)' }, ice_cream: { points: 3, emoji: '🍦', label: 'Ice Cream' }, cake: { points: 4, emoji: '🍰', label: 'Cake / Pastry' }, cookies: { points: 2, emoji: '🍪', label: 'Cookies' }, samosa: { points: 3, emoji: '🥟', label: 'Samosa' }, parotta: { points: 4, emoji: '🫓', label: 'Parotta / Malabar Parotta' }, vada_pav: { points: 3, emoji: '🍔', label: 'Vada Pav' }, pani_puri: { points: 2, emoji: '🧆', label: 'Pani Puri / Golgappe' }, jalebi: { points: 3, emoji: '🍥', label: 'Jalebi' }, pakora: { points: 2, emoji: '🌶️', label: 'Pakora / Bhaji / Fritter' }, bonda: { points: 2, emoji: '🥔', label: 'Bonda (Potato/Aloo)' }, murukku: { points: 2, emoji: '🥨', label: 'Murukku / Chakli' }, kachori: { points: 3, emoji: '🍘', label: 'Kachori' }, chaat: { points: 3, emoji: '🥣', label: 'Chaat (Generic)' }, gulab_jamun: { points: 3, emoji: '🍮', label: 'Gulab Jamun' }, bhel_puri: { points: 2, emoji: '🥗', label: 'Bhel Puri' }, dahi_vada: { points: 3, emoji: '🥣', label: 'Dahi Vada / Dahi Bhalla' }, medu_vada: { points: 3, emoji: '🍩', label: 'Medu Vada (Sambar/Chutney)' }, masala_dosa: { points: 4, emoji: '🌯', label: 'Masala Dosa' }
 };
-const RANKS = [ { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 }, { min: 20, name: "🌟 Beginner", color: 0x3498db, next: 50 }, { min: 50, name: "💪 Athlete", color: 0x9b59b6, next: 100 }, { min: 100, name: "🥉 Pro", color: 0xf39c12, next: 200 }, { min: 200, name: "🥈 Expert", color: 0xe67e22, next: 350 }, { min: 350, name: "🥇 Champion", color: 0xf1c40f, next: 500 }, { min: 500, name: "🏆 Legend", color: 0xe74c3c, next: 1000 }, { min: 1000, name: "👑 Godlike", color: 0x8e44ad, next: null } ];
-const ACHIEVEMENTS = [ { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn 1 point' }, { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' }, { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' }, { id: 'streak_7', name: '🔥 Week Warrior', requirement: (stats) => stats.current_streak >= 7, description: 'Maintain a 7-day streak' }, { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' } ];
-const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'kettlebell', 'lunge', 'pushup'];
-const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','carwash','dishwashing'];
-const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', ...CHORE_CATEGORIES];
+
+const RANKS = [ 
+    { min: 0, name: "🆕 Rookie", color: 0x95a5a6, next: 20 }, 
+    { min: 20, name: "🌟 Beginner", color: 0x3498db, next: 50 }, 
+    { min: 50, name: "💪 Athlete", color: 0x9b59b6, next: 100 }, 
+    { min: 100, name: "🥉 Pro", color: 0xf39c12, next: 200 }, 
+    { min: 200, name: "🥈 Expert", color: 0xe67e22, next: 350 }, 
+    { min: 350, name: "🥇 Champion", color: 0xf1c40f, next: 500 }, 
+    { min: 500, name: "🏆 Legend", color: 0xe74c3c, next: 1000 }, 
+    { min: 1000, name: "👑 Godlike", color: 0x8e44ad, next: null } 
+];
+
+const ACHIEVEMENTS = [ 
+    { id: 'first_points', name: '🎯 First Steps', requirement: (stats) => stats.total >= 1, description: 'Earn 1 point' }, 
+    { id: 'gym_rat', name: '💪 Gym Rat', requirement: (stats) => stats.gym >= 50, description: 'Earn 50 gym points' }, 
+    { id: 'cardio_king', name: '🏃 Cardio King', requirement: (stats) => stats.exercise >= 100, description: 'Earn 100 exercise points' }, 
+    { id: 'streak_7', name: '🔥 Week Warrior', requirement: (stats) => stats.current_streak >= 7, description: 'Maintain a 7-day streak' }, 
+    { id: 'century_club', name: '💯 Century Club', requirement: (stats) => stats.total >= 100, description: 'Reach 100 total points' } 
+];
+
+const EXERCISE_CATEGORIES = ['exercise', 'walking', 'jogging', 'running', 'plank', 'squat', 'home-squat', 'kettlebell', 'home-kettlebell', 'lunge', 'pushup', 'home-dumbbell', 'home-barbell'];
+const CHORE_CATEGORIES = ['cooking','sweeping','toiletcleaning','gardening','carwash','dishwashing','clothdrying'];
+const ALL_POINT_COLUMNS = ['gym', 'badminton', 'cricket', 'exercise', 'swimming', 'yoga', 'zumba', 'pilates', ...CHORE_CATEGORIES];
 
 /* =========================
-    DATABASE CLASS WITH CRITICAL FIX
+    DATABASE CLASS
 ========================= */
 class PointsDatabase {
     constructor(dbPath) {
         try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (err) { if (err.code !== 'EEXIST') console.error('[DB Error] Could not create data directory:', err); }
         
-        // Check for multiple instances
         const lockFile = path.join(path.dirname(dbPath), '.bot.lock');
         try {
             if (fs.existsSync(lockFile)) {
@@ -72,7 +135,6 @@ class PointsDatabase {
             this.db.pragma('foreign_keys = ON');
             console.log("✅ [DB] Database connection opened successfully.");
             
-            // Integrity check
             const integrityCheck = this.db.prepare('PRAGMA integrity_check').get();
             if (integrityCheck.integrity_check === 'ok') {
                 console.log("✅ [DB] Database integrity check passed.");
@@ -99,7 +161,6 @@ class PointsDatabase {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
             const backupFile = path.join(backupDir, `points_backup_${timestamp}.db`);
             
-            // Keep last 5 backups
             const backups = fs.readdirSync(backupDir)
                 .filter(f => f.startsWith('points_backup_'))
                 .sort()
@@ -121,17 +182,93 @@ class PointsDatabase {
     initSchema() {
         try {
             this.db.exec(`
-              CREATE TABLE IF NOT EXISTS points ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, gym REAL NOT NULL DEFAULT 0, badminton REAL NOT NULL DEFAULT 0, cricket REAL NOT NULL DEFAULT 0, exercise REAL NOT NULL DEFAULT 0, swimming REAL NOT NULL DEFAULT 0, yoga REAL NOT NULL DEFAULT 0, cooking REAL NOT NULL DEFAULT 0, sweeping REAL NOT NULL DEFAULT 0, toiletcleaning REAL NOT NULL DEFAULT 0, gardening REAL NOT NULL DEFAULT 0, carwash REAL NOT NULL DEFAULT 0, dishwashing REAL NOT NULL DEFAULT 0, current_streak INTEGER DEFAULT 0, longest_streak INTEGER DEFAULT 0, last_activity_date TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), updated_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
-              CREATE TABLE IF NOT EXISTS points_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, ts INTEGER NOT NULL, reason TEXT, notes TEXT, event_key TEXT );
-              CREATE TABLE IF NOT EXISTS cooldowns ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id, category) );
-              CREATE TABLE IF NOT EXISTS achievements ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, achievement_id TEXT NOT NULL, unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id, achievement_id) );
-              CREATE TABLE IF NOT EXISTS buddies ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, buddy_id TEXT, created_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (guild_id, user_id) );
-              CREATE TABLE IF NOT EXISTS reminders ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, activity TEXT, due_at INTEGER );
-              CREATE TABLE IF NOT EXISTS protein_log ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, item_name TEXT NOT NULL, protein_grams REAL NOT NULL, timestamp INTEGER NOT NULL );
+              CREATE TABLE IF NOT EXISTS points ( 
+                guild_id TEXT NOT NULL, 
+                user_id TEXT NOT NULL, 
+                total REAL NOT NULL DEFAULT 0, 
+                gym REAL NOT NULL DEFAULT 0, 
+                badminton REAL NOT NULL DEFAULT 0, 
+                cricket REAL NOT NULL DEFAULT 0, 
+                exercise REAL NOT NULL DEFAULT 0, 
+                swimming REAL NOT NULL DEFAULT 0, 
+                yoga REAL NOT NULL DEFAULT 0, 
+                zumba REAL NOT NULL DEFAULT 0, 
+                pilates REAL NOT NULL DEFAULT 0, 
+                cooking REAL NOT NULL DEFAULT 0, 
+                sweeping REAL NOT NULL DEFAULT 0, 
+                toiletcleaning REAL NOT NULL DEFAULT 0, 
+                gardening REAL NOT NULL DEFAULT 0, 
+                carwash REAL NOT NULL DEFAULT 0, 
+                dishwashing REAL NOT NULL DEFAULT 0, 
+                clothdrying REAL NOT NULL DEFAULT 0, 
+                current_streak INTEGER DEFAULT 0, 
+                longest_streak INTEGER DEFAULT 0, 
+                last_activity_date TEXT, 
+                gym_days INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT (strftime('%s', 'now')), 
+                updated_at INTEGER DEFAULT (strftime('%s', 'now')), 
+                PRIMARY KEY (guild_id, user_id) 
+              );
+              CREATE TABLE IF NOT EXISTS points_log ( 
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                guild_id TEXT NOT NULL, 
+                user_id TEXT NOT NULL, 
+                category TEXT NOT NULL, 
+                amount REAL NOT NULL, 
+                ts INTEGER NOT NULL, 
+                reason TEXT, 
+                notes TEXT, 
+                event_key TEXT 
+              );
+              CREATE TABLE IF NOT EXISTS cooldowns ( 
+                guild_id TEXT NOT NULL, 
+                user_id TEXT NOT NULL, 
+                category TEXT NOT NULL, 
+                last_ms INTEGER NOT NULL, 
+                PRIMARY KEY (guild_id, user_id, category) 
+              );
+              CREATE TABLE IF NOT EXISTS achievements ( 
+                guild_id TEXT NOT NULL, 
+                user_id TEXT NOT NULL, 
+                achievement_id TEXT NOT NULL, 
+                unlocked_at INTEGER DEFAULT (strftime('%s', 'now')), 
+                PRIMARY KEY (guild_id, user_id, achievement_id) 
+              );
+              CREATE TABLE IF NOT EXISTS buddies ( 
+                guild_id TEXT NOT NULL, 
+                user_id TEXT NOT NULL, 
+                buddy_id TEXT, 
+                created_at INTEGER DEFAULT (strftime('%s', 'now')), 
+                PRIMARY KEY (guild_id, user_id) 
+              );
+              CREATE TABLE IF NOT EXISTS reminders ( 
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                guild_id TEXT, 
+                user_id TEXT, 
+                activity TEXT, 
+                due_at INTEGER 
+              );
+              CREATE TABLE IF NOT EXISTS protein_log ( 
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                guild_id TEXT NOT NULL, 
+                user_id TEXT NOT NULL, 
+                item_name TEXT NOT NULL, 
+                protein_grams REAL NOT NULL, 
+                timestamp INTEGER NOT NULL 
+              );
+              CREATE TABLE IF NOT EXISTS gym_visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                visit_date TEXT NOT NULL,
+                logged_at INTEGER DEFAULT (strftime('%s', 'now')),
+                UNIQUE(guild_id, user_id, visit_date)
+              );
               CREATE INDEX IF NOT EXISTS idx_points_log_user ON points_log (guild_id, user_id);
               CREATE INDEX IF NOT EXISTS idx_points_log_category ON points_log (category);
               CREATE INDEX IF NOT EXISTS idx_points_log_guild_ts ON points_log(guild_id, ts);
               CREATE INDEX IF NOT EXISTS idx_points_total ON points(guild_id, total DESC);
+              CREATE INDEX IF NOT EXISTS idx_gym_visits_user ON gym_visits(guild_id, user_id);
               CREATE UNIQUE INDEX IF NOT EXISTS idx_pointslog_eventkey ON points_log (event_key) WHERE event_key IS NOT NULL;
             `);
             console.log("[DB] initSchema executed (ensured tables and indexes exist).");
@@ -142,9 +279,17 @@ class PointsDatabase {
          try {
             console.log("🔄 [DB Migration] Checking for necessary schema additions...");
             
-            // Add chore columns
-            CHORE_CATEGORIES.forEach(c => {
-                try { this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); }
+            // Add new columns
+            const newColumns = ['zumba', 'pilates', 'clothdrying', 'gym_days', ...CHORE_CATEGORIES];
+            newColumns.forEach(c => {
+                try { 
+                    if (c === 'gym_days') {
+                        this.db.exec(`ALTER TABLE points ADD COLUMN ${c} INTEGER DEFAULT 0;`); 
+                    } else {
+                        this.db.exec(`ALTER TABLE points ADD COLUMN ${c} REAL NOT NULL DEFAULT 0;`); 
+                    }
+                    console.log(`[Migration] Added column: ${c}`); 
+                }
                 catch (e) { if (!e.message.includes("duplicate column")) console.error(`[DB Migration Error] Alter points for ${c}:`, e);}
             });
             
@@ -203,12 +348,20 @@ class PointsDatabase {
             S.deleteReminder = this.db.prepare(`DELETE FROM reminders WHERE id = ?`);
             S.addProteinLog = this.db.prepare(`INSERT INTO protein_log (guild_id, user_id, item_name, protein_grams, timestamp) VALUES (?, ?, ?, ?, ?)`);
             S.getDailyProtein = this.db.prepare(`SELECT SUM(protein_grams) AS total FROM protein_log WHERE guild_id = ? AND user_id = ? AND timestamp >= ?`);
+            
+            // Gym visit tracking
+            S.logGymVisit = this.db.prepare(`INSERT OR IGNORE INTO gym_visits (guild_id, user_id, visit_date) VALUES (?, ?, ?)`);
+            S.getGymDaysCount = this.db.prepare(`SELECT COUNT(*) as count FROM gym_visits WHERE guild_id = ? AND user_id = ?`);
+            S.updateGymDays = this.db.prepare(`UPDATE points SET gym_days = ? WHERE guild_id = ? AND user_id = ?`);
+            S.getGymVisits = this.db.prepare(`SELECT visit_date FROM gym_visits WHERE guild_id = ? AND user_id = ? ORDER BY visit_date DESC LIMIT 30`);
+            
             S.clearUserPoints = this.db.prepare(`DELETE FROM points WHERE guild_id = ? AND user_id = ?`);
             S.clearUserLog = this.db.prepare(`DELETE FROM points_log WHERE guild_id = ? AND user_id = ?`);
             S.clearUserAchievements = this.db.prepare(`DELETE FROM achievements WHERE guild_id = ? AND user_id = ?`);
             S.clearUserCooldowns = this.db.prepare(`DELETE FROM cooldowns WHERE guild_id = ? AND user_id = ?`);
             S.clearUserProtein = this.db.prepare(`DELETE FROM protein_log WHERE guild_id = ? AND user_id = ?`);
             S.clearUserBuddy = this.db.prepare(`DELETE FROM buddies WHERE guild_id = ? AND user_id = ?`);
+            S.clearUserGymVisits = this.db.prepare(`DELETE FROM gym_visits WHERE guild_id = ? AND user_id = ?`);
             S.resetGuildPoints = this.db.prepare('DELETE FROM points WHERE guild_id = ?');
             S.resetGuildLog = this.db.prepare('DELETE FROM points_log WHERE guild_id = ?');
             S.resetGuildCooldowns = this.db.prepare('DELETE FROM cooldowns WHERE guild_id = ?');
@@ -216,12 +369,12 @@ class PointsDatabase {
             S.resetGuildBuddies = this.db.prepare('DELETE FROM buddies WHERE guild_id = ?');
             S.resetGuildProtein = this.db.prepare('DELETE FROM protein_log WHERE guild_id = ?');
             S.resetGuildReminders = this.db.prepare('DELETE FROM reminders WHERE guild_id = ?');
+            S.resetGuildGymVisits = this.db.prepare('DELETE FROM gym_visits WHERE guild_id = ?');
             this.stmts = S;
             console.log("[DB] Statements prepared successfully.");
         } catch (stmtErr) { console.error("❌ [DB FATAL] Error preparing statements:", stmtErr); process.exit(1); }
     }
 
-    // *** CRITICAL FIX: PROPER TRANSACTION HANDLING ***
     modifyPoints({ guildId, userId, category, amount, reason = null, notes = null }) {
         console.log(`[modifyPoints] START for user ${userId}: category=${category}, amount=${amount}, reason=${reason}`);
         
@@ -237,15 +390,12 @@ class PointsDatabase {
         console.log(`[modifyPoints] Generated eventKey: ${eventKey.substring(0,8)}..., timestamp: ${timestampSeconds}`);
         
         try {
-            // *** USE TRANSACTION TO ENSURE ATOMICITY ***
             const result = this.db.transaction(() => {
                 console.log(`[modifyPoints TX] Starting transaction for ${userId}`);
                 
-                // Step 1: Ensure user exists
                 this.stmts.upsertUser.run({ guild_id: guildId, user_id: userId });
                 console.log(`[modifyPoints TX] Ensured user exists`);
                 
-                // Step 2: Log the points FIRST (critical!)
                 try {
                     const logInfo = this.stmts.logPoints.run(
                         guildId, 
@@ -265,10 +415,9 @@ class PointsDatabase {
                     }
                 } catch (logErr) {
                     console.error(`[modifyPoints TX] ❌ CRITICAL: Failed to log points:`, logErr);
-                    throw logErr; // Rollback transaction
+                    throw logErr;
                 }
                 
-                // Step 3: Update points table
                 const safeCols = ALL_POINT_COLUMNS;
                 let logCategory = category;
                 let targetCol = category;
@@ -276,7 +425,8 @@ class PointsDatabase {
                 if (EXERCISE_CATEGORIES.includes(category)) {
                     targetCol = 'exercise';
                 } else if (category === 'junk') {
-                    const up = this.stmts.getUser.get(guildId, userId) || {};
+                    const up = this.stmts.getUser.get
+(guildId, userId) || {};
                     targetCol = ALL_POINT_COLUMNS.sort((a, b) => (up[b] || 0) - (up[a] || 0))[0] || 'exercise';
                 } else if (!safeCols.includes(category)) {
                     console.warn(`[modifyPoints] Unknown category '${category}'`);
@@ -289,7 +439,15 @@ class PointsDatabase {
                     console.log(`[modifyPoints TX] Updated ${targetCol}: changes=${updateInfo.changes}`);
                 }
                 
-                // Step 4: Recalc total
+                // Track gym visits
+                if (category === 'gym' && modAmount > 0) {
+                    const today = new Date().toISOString().slice(0, 10);
+                    this.stmts.logGymVisit.run(guildId, userId, today);
+                    const gymCount = this.stmts.getGymDaysCount.get(guildId, userId);
+                    this.stmts.updateGymDays.run(gymCount.count, guildId, userId);
+                    console.log(`[modifyPoints TX] Updated gym days count: ${gymCount.count}`);
+                }
+                
                 this.stmts.recalcUserTotal.run({ guild_id: guildId, user_id: userId });
                 console.log(`[modifyPoints TX] Recalculated total`);
                 
@@ -297,10 +455,8 @@ class PointsDatabase {
                 return { success: true };
             })();
             
-            // Transaction succeeded
             console.log(`[modifyPoints] ✅ Transaction committed successfully`);
             
-            // Checkpoint after successful transaction
             try {
                 this.db.pragma('wal_checkpoint(PASSIVE)');
                 console.log(`[modifyPoints] Checkpoint completed`);
@@ -308,7 +464,6 @@ class PointsDatabase {
                 console.error(`[modifyPoints] Checkpoint failed:`, cpErr);
             }
             
-            // Update streak and check achievements (outside transaction)
             if (modAmount > 0) {
                 this.updateStreak(guildId, userId);
                 return this.checkAchievements(guildId, userId);
@@ -319,7 +474,7 @@ class PointsDatabase {
         } catch (err) {
             console.error(`[modifyPoints] ❌ TRANSACTION FAILED:`, err);
             console.error(`[modifyPoints] Transaction was rolled back. No changes made.`);
-            throw err; // Re-throw to let caller know it failed
+            throw err;
         }
     }
 
@@ -346,7 +501,6 @@ class PointsDatabase {
     }
     close() {
         try {
-            // Remove lock file
             const lockFile = path.join(path.dirname(CONFIG.dbFile), '.bot.lock');
             if (fs.existsSync(lockFile)) {
                 fs.unlinkSync(lockFile);
@@ -363,7 +517,6 @@ class PointsDatabase {
     }
 }
 
-// --- RECONCILE WITH BETTER LOGGING ---
 function reconcileTotals(db) {
   try {
     console.log("🔄 [Reconcile] Starting reconciliation...");
@@ -429,7 +582,6 @@ function reconcileTotals(db) {
   }
 }
 
-// --- Utilities ---
 const formatNumber = (n) => (Math.round(n * 1000) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const progressBar = (pct) => `${'█'.repeat(Math.floor(pct / 10))}${'░'.repeat(10 - Math.floor(pct / 10))} ${pct}%`;
 const getUserRank = (total) => RANKS.reduce((acc, rank) => total >= rank.min ? rank : acc, RANKS[0]);
@@ -448,19 +600,32 @@ function buildCommands() {
     const fixedPointCategories = Object.keys(POINTS);
     const adminCategoryChoices = [...new Set([ ...fixedPointCategories, 'exercise' ])].map(c => ({name: c.charAt(0).toUpperCase() + c.slice(1), value: c}));
     const allLbCategories = ['all', 'streak', 'exercise', ...fixedPointCategories ];
-    const tableChoices = [ { name: 'Points', value: 'points' }, { name: 'Points Log', value: 'points_log' }, { name: 'Cooldowns', value: 'cooldowns' }, { name: 'Buddies', value: 'buddies' }, { name: 'Achievements', value: 'achievements' }, { name: 'Protein Log', value: 'protein_log' }, { name: 'Reminders', value: 'reminders' } ];
+    const tableChoices = [ 
+        { name: 'Points', value: 'points' }, 
+        { name: 'Points Log', value: 'points_log' }, 
+        { name: 'Cooldowns', value: 'cooldowns' }, 
+        { name: 'Buddies', value: 'buddies' }, 
+        { name: 'Achievements', value: 'achievements' }, 
+        { name: 'Protein Log', value: 'protein_log' }, 
+        { name: 'Reminders', value: 'reminders' },
+        { name: 'Gym Visits', value: 'gym_visits' }
+    ];
 
     return [
         ...fixedPointCategories.map(name => new SlashCommandBuilder().setName(name).setDescription(`Log ${name} (+${POINTS[name]} pts)`)),
         new SlashCommandBuilder().setName('exercise').setDescription('💪 Log detailed exercise')
-            .addSubcommand(s=>s.setName('yoga').setDescription(`🧘 Yoga (+${POINTS.yoga} pts)`).addNumberOption(o=>o.setName('minutes').setRequired(true).setMinValue(1).setDescription('Mins')))
-            .addSubcommand(s=>s.setName('reps').setDescription(`💪 Generic reps (${EXERCISE_RATES.per_rep} pts/rep)`).addNumberOption(o=>o.setName('count').setRequired(true).setMinValue(1).setDescription('Total reps')))
-            .addSubcommand(s=>s.setName('dumbbells').setDescription(`🏋️ Dumbbells (${EXERCISE_RATES.per_rep} pts/rep)`).addNumberOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addNumberOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
-            .addSubcommand(s=>s.setName('barbell').setDescription(`🏋️ Barbell (${EXERCISE_RATES.per_rep} pts/rep)`).addNumberOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addNumberOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
-            .addSubcommand(s=>s.setName('pushup').setDescription(`💪 Pushups (${REP_RATES.pushup} pts/rep)`).addNumberOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addNumberOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
+            .addSubcommand(s=>s.setName('yoga').setDescription(`🧘 Yoga (+${POINTS.yoga} pts)`).addIntegerOption(o=>o.setName('minutes').setRequired(true).setMinValue(1).setDescription('Mins')))
+            .addSubcommand(s=>s.setName('reps').setDescription(`💪 Generic reps (${EXERCISE_RATES.per_rep} pts/rep)`).addIntegerOption(o=>o.setName('count').setRequired(true).setMinValue(1).setDescription('Total reps')))
+            .addSubcommand(s=>s.setName('dumbbells').setDescription(`🏋️ Gym Dumbbells (${EXERCISE_RATES.per_rep} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addIntegerOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
+            .addSubcommand(s=>s.setName('home-dumbbell').setDescription(`🏠 Home Dumbbells (${REP_RATES['home-dumbbell']} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addIntegerOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
+            .addSubcommand(s=>s.setName('barbell').setDescription(`🏋️ Gym Barbell (${EXERCISE_RATES.per_rep} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addIntegerOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
+            .addSubcommand(s=>s.setName('home-barbell').setDescription(`🏠 Home Barbell (${REP_RATES['home-barbell']} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addIntegerOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
+            .addSubcommand(s=>s.setName('pushup').setDescription(`💪 Pushups (${REP_RATES.pushup} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Reps/set')).addIntegerOption(o=>o.setName('sets').setRequired(true).setMinValue(1).setDescription('Sets')))
             .addSubcommand(s=>s.setName('plank').setDescription(`🧱 Plank (${PLANK_RATE_PER_MIN} pt/min)`).addNumberOption(o=>o.setName('minutes').setRequired(true).setMinValue(PLANK_MIN_MIN).setDescription(`Mins (min ${PLANK_MIN_MIN})`)))
-            .addSubcommand(s=>s.setName('squat').setDescription(`🦵 Squats (${REP_RATES.squat} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
-            .addSubcommand(s=>s.setName('kettlebell').setDescription(`🏋️ Kettlebell (${REP_RATES.kettlebell} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
+            .addSubcommand(s=>s.setName('squat').setDescription(`🦵 Gym Squats (${REP_RATES.squat} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
+            .addSubcommand(s=>s.setName('home-squat').setDescription(`🏠 Home Squats (${REP_RATES['home-squat']} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
+            .addSubcommand(s=>s.setName('kettlebell').setDescription(`🏋️ Gym Kettlebell (${REP_RATES.kettlebell} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
+            .addSubcommand(s=>s.setName('home-kettlebell').setDescription(`🏠 Home Kettlebell (${REP_RATES['home-kettlebell']} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps')))
             .addSubcommand(s=>s.setName('lunge').setDescription(`🦿 Lunges (${REP_RATES.lunge} pts/rep)`).addIntegerOption(o=>o.setName('reps').setRequired(true).setMinValue(1).setDescription('Total Reps'))),
         new SlashCommandBuilder().setName('protein').setDescription('🥩 Track protein')
             .addSubcommand(s=>s.setName('add_item').setDescription('Add by item').addStringOption(o=>o.setName('item').setRequired(true).setDescription('Food').addChoices(...Object.entries(PROTEIN_SOURCES).filter(([,v])=>v.unit==='item').map(([k,v])=>({name:v.name, value:k})))).addIntegerOption(o=>o.setName('quantity').setRequired(true).setMinValue(1).setDescription('Qty')))
@@ -471,6 +636,8 @@ function buildCommands() {
         new SlashCommandBuilder().setName('jogging').setDescription(`🏃 Log jogging (${DISTANCE_RATES.jogging} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('running').setDescription(`💨 Log running (${DISTANCE_RATES.running} pts/km)`).addNumberOption(o=>o.setName('km').setRequired(true).setMinValue(0.1).setDescription('Km')),
         new SlashCommandBuilder().setName('myscore').setDescription('🏆 Show score & rank').addUserOption(o => o.setName('user').setDescription('User to view (default: you)')),
+        new SlashCommandBuilder().setName('gymstats').setDescription('🏋️ View gym visit history').addUserOption(o => o.setName('user').setDescription('User to view (default: you)')),
+        new SlashCommandBuilder().setName('commands').setDescription('📋 List all commands and points'),
         new SlashCommandBuilder().setName('leaderboard').setDescription('📊 Show All-Time leaderboard').addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
         new SlashCommandBuilder().setName('leaderboard_period').setDescription('📅 Show periodic leaderboard').addStringOption(o=>o.setName('period').setRequired(true).setDescription('Period').addChoices({name:'Today',value:'day'},{name:'Week',value:'week'},{name:'Month',value:'month'},{name:'Year',value:'year'})).addStringOption(o=>o.setName('category').setDescription('Filter category (default: all)').addChoices(...allLbCategories.map(c=>({name:c[0].toUpperCase()+c.slice(1), value:c})))),
         new SlashCommandBuilder().setName('junk').setDescription('🍕 Log junk food').addStringOption(o=>o.setName('item').setRequired(true).setDescription('Item').addChoices(...Object.entries(DEDUCTIONS).map(([k,{emoji,label}])=>({name:`${emoji} ${label}`,value:k})))),
@@ -505,7 +672,13 @@ class CommandHandler {
             this.db.commitCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey });
             const userRow = this.db.stmts.getUser.get(guild.id, user.id); if (!userRow) return interaction.editReply({ content: 'Error updating score.' });
             const { cur, need } = nextRankProgress(userRow.total); let footerText = `PID: ${BOT_PROCESS_ID}`; if (need > 0) footerText = `${formatNumber(need)} pts to next rank! | ${footerText}`;
-            const embed = new EmbedBuilder().setColor(cur.color).setDescription(`${user.toString()} claimed **+${formatNumber(amount)}** pts for **${category}**!`).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
+            
+            let description = `${user.toString()} claimed **+${formatNumber(amount)}** pts for **${category}**!`;
+            if (category === 'gym') {
+                description += `\n🏋️ Gym days: **${userRow.gym_days || 1}**`;
+            }
+            
+            const embed = new EmbedBuilder().setColor(cur.color).setDescription(description).addFields({ name: "Total", value: `🏆 ${formatNumber(userRow.total)}`, inline: true }, { name: "Rank", value: cur.name, inline: true }).setThumbnail(user.displayAvatarURL()).setFooter({ text: footerText });
             const payload = { content: '', embeds:[embed] }; await interaction.editReply(payload);
             if (achievements.length) { return interaction.followUp({ embeds: [new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Achievement!').setDescription(achievements.map(a => `**${a.name}**: ${a.description}`).join('\n')).setFooter({ text: `PID: ${BOT_PROCESS_ID}` })], flags: [MessageFlags.Ephemeral] }); }
         } catch (err) {
@@ -513,6 +686,7 @@ class CommandHandler {
             return interaction.editReply({ content: '❌ Error claiming points. Check logs.' });
         }
     }
+    
     async handleDistance(interaction, activity) {
         const { guild, user, options } = interaction; const km = options.getNumber('km', true); const amount = km * DISTANCE_RATES[activity]; const cooldownKey = 'exercise';
         const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownKey }); if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for exercises: ${formatCooldown(remaining)}.` });
@@ -530,16 +704,40 @@ class CommandHandler {
             return interaction.editReply({ content: '❌ Error logging distance. Check logs.' });
         }
     }
+    
     async handleExercise(interaction) {
         const { guild, user, options } = interaction; const subcommand = options.getSubcommand();
         let amount = 0, description = '', cooldownCategory = 'exercise', logCategory = 'exercise', reasonPrefix = 'exercise', notes = '';
-        if (subcommand === 'yoga') { cooldownCategory = 'yoga'; logCategory = 'yoga'; reasonPrefix = 'claim'; } else if (subcommand === 'plank') { logCategory = 'plank'; reasonPrefix = 'time'; } else if (REP_RATES[subcommand]) { logCategory = subcommand; reasonPrefix = 'reps'; }
-        const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory }); if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${subcommand}**: ${formatCooldown(remaining)}.` });
+        if (subcommand === 'yoga') { cooldownCategory = 'yoga'; logCategory = 'yoga'; reasonPrefix = 'claim'; } 
+        else if (subcommand === 'plank') { logCategory = 'plank'; reasonPrefix = 'time'; } 
+        else if (REP_RATES[subcommand]) { logCategory = subcommand; reasonPrefix = 'reps'; }
+        
+        const remaining = this.db.checkCooldown({ guildId: guild.id, userId: user.id, category: cooldownCategory }); 
+        if (remaining > 0) return interaction.editReply({ content: `⏳ Cooldown for **${subcommand}**: ${formatCooldown(remaining)}.` });
+        
         switch (subcommand) {
-             case 'yoga': { const m=options.getNumber('minutes', true); amount=POINTS.yoga||0; description=`${user} claimed **+${formatNumber(amount)}** pts for **Yoga**!`; notes=`${m} min`; break; }
+             case 'yoga': { const m=options.getInteger('minutes', true); amount=POINTS.yoga||0; description=`${user} claimed **+${formatNumber(amount)}** pts for **Yoga**!`; notes=`${m} min`; break; }
              case 'plank': { const m=options.getNumber('minutes', true); amount=m*PLANK_RATE_PER_MIN; description=`${user} held **plank** for **${formatNumber(m)} min** → **+${formatNumber(amount)}** pts!`; notes=`${m} min`; break; }
-             case 'reps': { const c=options.getNumber('count', true); amount=c*EXERCISE_RATES.per_rep; description=`${user} logged **${c} total reps** → **+${formatNumber(amount)}** pts!`; notes=`${c} reps`; break; }
-             case 'dumbbells': case 'barbell': case 'pushup': case 'squat': case 'kettlebell': case 'lunge': { const rI=options.getInteger('reps',false); const sI=options.getInteger('sets',false); let tR; if (['squat','kettlebell','lunge'].includes(subcommand)) { tR=rI||options.getInteger('reps',true); notes=`${tR} reps`; } else { const r=rI??1; const s=sI??1; tR=r*s; notes=`${s}x${r} reps`; } const rate=REP_RATES[subcommand]??EXERCISE_RATES.per_rep; amount=tR*rate; description=`${user} logged ${notes} **${subcommand}** → **+${formatNumber(amount)}** pts!`; break; }
+             case 'reps': { const c=options.getInteger('count', true); amount=c*EXERCISE_RATES.per_rep; description=`${user} logged **${c} total reps** → **+${formatNumber(amount)}** pts!`; notes=`${c} reps`; break; }
+             case 'dumbbells': case 'barbell': case 'home-dumbbell': case 'home-barbell': case 'pushup': case 'squat': case 'home-squat': case 'kettlebell': case 'home-kettlebell': case 'lunge': { 
+                 const rI=options.getInteger('reps',false); 
+                 const sI=options.getInteger('sets',false); 
+                 let tR; 
+                 if (['squat','home-squat','kettlebell','home-kettlebell','lunge'].includes(subcommand)) { 
+                     tR=rI||options.getInteger('reps',true); 
+                     notes=`${tR} reps`; 
+                 } else { 
+                     const r=rI??1; 
+                     const s=sI??1; 
+                     tR=r*s; 
+                     notes=`${s}x${r} reps`; 
+                 } 
+                 const rate=REP_RATES[subcommand]??EXERCISE_RATES.per_rep; 
+                 amount=tR*rate; 
+                 const locationPrefix = subcommand.startsWith('home-') ? '🏠 ' : '🏋️ ';
+                 description=`${user} logged ${locationPrefix}${notes} **${subcommand}** → **+${formatNumber(amount)}** pts!`; 
+                 break; 
+             }
         }
         
         try {
@@ -555,6 +753,7 @@ class CommandHandler {
             return interaction.editReply({ content: '❌ Error logging exercise. Check logs.' });
         }
     }
+    
     async handleProtein(interaction) {
         const { guild, user, options } = interaction; const sub = options.getSubcommand(); const tU = options.getUser('user') || user;
         if (sub === 'total') { const s=getPeriodStart('day'); const r=this.db.stmts.getDailyProtein.get(guild.id, tU.id, s); const tP=r?.total||0; const e = new EmbedBuilder().setColor(0x5865F2).setTitle(`🥩 Daily Protein for ${tU.displayName}`).setDescription(`Logged **${formatNumber(tP)}g** protein today.`).setThumbnail(tU.displayAvatarURL()).setFooter({ text: `PID: ${BOT_PROCESS_ID}` }); return interaction.editReply({ content:'', embeds: [e] }); }
@@ -567,6 +766,7 @@ class CommandHandler {
         const e = new EmbedBuilder().setColor(0x2ECC71).setTitle('✅ Protein Logged!').setDescription(`${user} added **${formatNumber(pG)}g** protein from **${iN}**.`).addFields({ name: 'Daily Total', value: `Today: **${formatNumber(tP)}g** protein.` }).setThumbnail(user.displayAvatarURL()).setFooter({ text: `PID: ${BOT_PROCESS_ID}` });
         return interaction.editReply({ content:'', embeds: [e] });
     }
+    
     async handleJunk(interaction) {
         const { guild, user, options } = interaction; const item = options.getString('item', true); const d = DEDUCTIONS[item]; const msgs = ["Balance is key!", "One step back, two forward!", "Honesty is progress!", "Treats happen!", "Acknowledge and move on!"]; const msg = msgs[Math.floor(Math.random()*msgs.length)];
         
@@ -580,14 +780,101 @@ class CommandHandler {
             return interaction.editReply({ content: '❌ Error logging junk food. Check logs.' });
         }
     }
+    
     async handleMyScore(interaction) {
         const { guild, options } = interaction; const tU = options.getUser('user') || interaction.user;
-        const uR = this.db.stmts.getUser.get(guild.id, tU.id) || { total: 0, current_streak: 0 }; const { pct, cur, need } = nextRankProgress(uR.total);
+        const uR = this.db.stmts.getUser.get(guild.id, tU.id) || { total: 0, current_streak: 0, gym_days: 0 }; 
+        const { pct, cur, need } = nextRankProgress(uR.total);
         const ach = this.db.stmts.getUserAchievements.all(guild.id, tU.id).map(r => r.achievement_id);
-        const e = new EmbedBuilder().setColor(cur.color).setAuthor({ name: tU.displayName, iconURL: tU.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`).addFields({ name: 'Points', value: formatNumber(uR.total), inline: true }, { name: 'Streak', value: `🔥 ${uR.current_streak || 0}d`, inline: true }, { name: 'Progress', value: progressBar(pct), inline: false }, { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' });
+        const e = new EmbedBuilder().setColor(cur.color).setAuthor({ name: tU.displayName, iconURL: tU.displayAvatarURL() }).setTitle(`Rank: ${cur.name}`)
+            .addFields(
+                { name: 'Points', value: formatNumber(uR.total), inline: true }, 
+                { name: 'Streak', value: `🔥 ${uR.current_streak || 0}d`, inline: true },
+                { name: 'Gym Days', value: `🏋️ ${uR.gym_days || 0}`, inline: true },
+                { name: 'Progress', value: progressBar(pct), inline: false }, 
+                { name: 'Achievements', value: ach.length > 0 ? ach.map(id => `**${ACHIEVEMENTS.find(a => a.id === id)?.name || id}**`).join(', ') : 'None' }
+            );
         let fT = `PID: ${BOT_PROCESS_ID}`; if (need > 0) fT = `${formatNumber(need)} pts to next rank! | ${fT}`; e.setFooter({ text: fT });
         return interaction.editReply({ content:'', embeds: [e] });
     }
+    
+    async handleGymStats(interaction) {
+        const { guild, options } = interaction; 
+        const tU = options.getUser('user') || interaction.user;
+        
+        try {
+            const uR = this.db.stmts.getUser.get(guild.id, tU.id) || { gym_days: 0 };
+            const visits = this.db.stmts.getGymVisits.all(guild.id, tU.id);
+            
+            const embed = new EmbedBuilder()
+                .setColor(0x2ECC71)
+                .setAuthor({ name: `${tU.displayName}'s Gym Stats`, iconURL: tU.displayAvatarURL() })
+                .setTitle(`🏋️ Total Gym Days: ${uR.gym_days || 0}`)
+                .setFooter({ text: `PID: ${BOT_PROCESS_ID}` });
+            
+            if (visits.length > 0) {
+                const recentVisits = visits.slice(0, 10).map(v => `📅 ${v.visit_date}`).join('\n');
+                embed.addFields({ name: 'Recent Visits (Last 10)', value: recentVisits || 'None' });
+            } else {
+                embed.setDescription('No gym visits logged yet. Use `/gym` to log your first visit!');
+            }
+            
+            return interaction.editReply({ content: '', embeds: [embed] });
+        } catch (err) {
+            console.error(`[handleGymStats] Error:`, err);
+            return interaction.editReply({ content: '❌ Error fetching gym stats.' });
+        }
+    }
+    
+    async handleCommands(interaction) {
+        const fixedCategories = Object.keys(POINTS);
+        const commandsList = [
+            '**🏋️ ACTIVITY COMMANDS:**',
+            ...fixedCategories.map(cat => `\`/${cat}\` - +${POINTS[cat]} pts`),
+            '',
+            '**💪 EXERCISE SUBCOMMANDS (`/exercise`):**',
+            `\`yoga\` - +${POINTS.yoga} pts`,
+            `\`plank\` - ${PLANK_RATE_PER_MIN} pt/min`,
+            `\`reps\` - ${EXERCISE_RATES.per_rep} pts/rep`,
+            `\`dumbbells\` (gym) - ${EXERCISE_RATES.per_rep} pts/rep`,
+            `\`home-dumbbell\` - ${REP_RATES['home-dumbbell']} pts/rep`,
+            `\`barbell\` (gym) - ${EXERCISE_RATES.per_rep} pts/rep`,
+            `\`home-barbell\` - ${REP_RATES['home-barbell']} pts/rep`,
+            `\`pushup\` - ${REP_RATES.pushup} pts/rep`,
+            `\`squat\` (gym) - ${REP_RATES.squat} pts/rep`,
+            `\`home-squat\` - ${REP_RATES['home-squat']} pts/rep`,
+            `\`kettlebell\` (gym) - ${REP_RATES.kettlebell} pts/rep`,
+            `\`home-kettlebell\` - ${REP_RATES['home-kettlebell']} pts/rep`,
+            `\`lunge\` - ${REP_RATES.lunge} pts/rep`,
+            '',
+            '**🏃 DISTANCE COMMANDS:**',
+            `\`/walking\` - ${DISTANCE_RATES.walking} pts/km`,
+            `\`/jogging\` - ${DISTANCE_RATES.jogging} pts/km`,
+            `\`/running\` - ${DISTANCE_RATES.running} pts/km`,
+            '',
+            '**📊 INFO COMMANDS:**',
+            '`/myscore` - View your score & rank',
+            '`/gymstats` - View gym visit history',
+            '`/leaderboard` - View all-time rankings',
+            '`/leaderboard_period` - View period rankings',
+            '',
+            '**🥩 OTHER:**',
+            '`/protein` - Track protein intake',
+            '`/junk` - Log junk food (deducts points)',
+            '`/buddy` - Set workout buddy',
+            '`/nudge` - Nudge your buddy',
+            '`/remind` - Set reminders'
+        ];
+        
+        const embed = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle('📋 All Commands & Points')
+            .setDescription(commandsList.join('\n'))
+            .setFooter({ text: `PID: ${BOT_PROCESS_ID}` });
+        
+        return interaction.editReply({ content: '', embeds: [embed] });
+    }
+    
     async handleLeaderboard(interaction) {
         const { guild, user, options } = interaction; const cat = options.getString('category') || 'all';
         try { let rows=[], sub='', sR=null; sub=`All Time • ${cat==='all'?'Total Points':cat==='streak'?'Current Streak':cat[0].toUpperCase()+cat.slice(1)}`;
@@ -596,6 +883,7 @@ class CommandHandler {
             const embed=new EmbedBuilder().setTitle(`🏆 Leaderboard: ${sub}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp().setFooter({text:fT}); return interaction.editReply({content:'', embeds:[embed]});
         } catch (e) { console.error('LB Error:', e); return interaction.editReply({ content: '❌ Error generating leaderboard.' }); }
     }
+    
     async handleLeaderboardPeriod(interaction) {
         const { guild, user, options } = interaction; const period = options.getString('period', true); const cat = options.getString('category') || 'all';
         try { let rows=[]; const {start,end}=getPeriodRange(period); const pN={day:'Today',week:'Week',month:'Month',year:'Year'}[period]; const sS=`<t:${start}:d>`,eS=`<t:${end}:d>`; let sub=`${pN} (${sS}-${eS}) • ${cat==='all'?'Net Points':cat[0].toUpperCase()+cat.slice(1)}`; if(cat==='streak')return interaction.editReply({content:'📊 Streak LB only All-Time.'}); else{let qC=cat; if(cat==='exercise')qC=EXERCISE_CATEGORIES; const p=Array.isArray(qC)?qC.map(()=>'?').join(','):'?'; let q='',params=[]; if(cat==='all'){q=`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts>=? AND ts<? AND amount<>0 GROUP BY user_id HAVING SUM(amount)<>0 ORDER BY score DESC LIMIT 10`; params=[guild.id,start,end];}else{q=`SELECT user_id as userId, SUM(amount) AS score FROM points_log WHERE guild_id=? AND ts>=? AND ts<? AND amount<>0 AND category IN (${p}) GROUP BY user_id HAVING SUM(amount)<>0 ORDER BY score DESC LIMIT 10`; params=Array.isArray(qC)?[guild.id,start,end,...qC]:[guild.id,start,end,qC];} rows=this.db.db.prepare(q).all(...params);}
@@ -603,12 +891,15 @@ class CommandHandler {
             const embed=new EmbedBuilder().setTitle(`📅 Leaderboard: ${sub}`).setColor(0x3498db).setDescription(entries.join('\n')).setTimestamp().setFooter({text:`PID: ${BOT_PROCESS_ID}`}); return interaction.editReply({content:'', embeds:[embed]});
         } catch (e) { console.error('Period LB Error:', e); return interaction.editReply({ content: '❌ Error generating periodic leaderboard.' }); }
     }
+    
     async handleBuddy(interaction) {
         const { guild, user, options } = interaction; const tU = options.getUser('user'); if (!tU) { const b = this.db.stmts.getBuddy.get(guild.id, user.id); return interaction.editReply({ content: b?.buddy_id ? `Buddy: <@${b.buddy_id}>` : 'No buddy set!' }); } if (tU.id === user.id) return interaction.editReply({ content: 'Cannot be own buddy!' }); this.db.stmts.setBuddy.run(guild.id, user.id, tU.id); return interaction.editReply({ content: `✨ ${user} set <@${tU.id}> as buddy!` });
     }
+    
     async handleNudge(interaction) {
         const { guild, user, options } = interaction; const tU = options.getUser('user', true); const act = options.getString('activity', true); if (tU.bot || tU.id === user.id) return interaction.editReply({ content: "Cannot nudge bots/self." }); const isAdm = interaction.member.permissions.has(PermissionFlagsBits.ManageGuild); const b = this.db.stmts.getBuddy.get(guild.id, user.id); const isBud = b?.buddy_id === tU.id; if (!isAdm && !isBud) return interaction.editReply({ content: "Can only nudge buddy (or ask admin)." }); try { await tU.send(`⏰ <@${user.id}> from **${guild.name}** nudges: **${act}**!`); return interaction.editReply({ content: `✅ Nudge sent to <@${tU.id}>.` }); } catch (err) { console.error(`Nudge DM Error for ${tU.id}:`, err); return interaction.editReply({ content: `❌ Could not DM user. DMs disabled?` }); }
     }
+    
     async handleRemind(interaction) {
         const { guild, user, options } = interaction; const act = options.getString('activity', true); const hrs = options.getNumber('hours', true); const due = Date.now() + hrs * 3600000; this.db.stmts.addReminder.run(guild.id, user.id, act, due); return interaction.editReply({ content: `⏰ Reminder set for **${act}** in ${hrs}h.` });
     }
@@ -620,11 +911,11 @@ class CommandHandler {
         if (sub === 'export_user_log') { return this.handleExportUserLog(interaction); }
         if (sub === 'clear_user_data') {
             if (!targetUser) return interaction.editReply({ content: 'User required.', flags: [MessageFlags.Ephemeral] }); const confirm = options.getString('confirm', true); if (confirm !== 'CONFIRM') { return interaction.editReply({ content: '❌ Type `CONFIRM` to proceed.', flags: [MessageFlags.Ephemeral] }); }
-            try { this.db.db.transaction(() => { console.log(`[Admin clear] Start TX for ${targetUser.id}`); let tc=0; try { const i=this.db.stmts.clearUserPoints.run(guild.id, targetUser.id); console.log(`Cleared points: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear pts:`,e); throw e;} try { const i=this.db.stmts.clearUserLog.run(guild.id, targetUser.id); console.log(`Cleared log: ${i.changes}`); tc+=i.changes; if(i.changes===0) console.warn(`WARN: log delete 0 changes`); } catch(e){console.error(`Err clear log:`,e); throw e;} try { const i=this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id); console.log(`Cleared achievements: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear ach:`,e); throw e;} try { const i=this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id); console.log(`Cleared cooldowns: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear cd:`,e); throw e;} try { const i=this.db.stmts.clearUserProtein.run(guild.id, targetUser.id); console.log(`Cleared protein: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear prot:`,e); throw e;} try { const i=this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); console.log(`Cleared buddy: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear buddy:`,e); throw e;} console.log(`[Admin clear] TX finished. Rows (approx): ${tc}`); })();
+            try { this.db.db.transaction(() => { console.log(`[Admin clear] Start TX for ${targetUser.id}`); let tc=0; try { const i=this.db.stmts.clearUserPoints.run(guild.id, targetUser.id); console.log(`Cleared points: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear pts:`,e); throw e;} try { const i=this.db.stmts.clearUserLog.run(guild.id, targetUser.id); console.log(`Cleared log: ${i.changes}`); tc+=i.changes; if(i.changes===0) console.warn(`WARN: log delete 0 changes`); } catch(e){console.error(`Err clear log:`,e); throw e;} try { const i=this.db.stmts.clearUserAchievements.run(guild.id, targetUser.id); console.log(`Cleared achievements: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear ach:`,e); throw e;} try { const i=this.db.stmts.clearUserCooldowns.run(guild.id, targetUser.id); console.log(`Cleared cooldowns: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear cd:`,e); throw e;} try { const i=this.db.stmts.clearUserProtein.run(guild.id, targetUser.id); console.log(`Cleared protein: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear prot:`,e); throw e;} try { const i=this.db.stmts.clearUserBuddy.run(guild.id, targetUser.id); console.log(`Cleared buddy: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear buddy:`,e); throw e;} try { const i=this.db.stmts.clearUserGymVisits.run(guild.id, targetUser.id); console.log(`Cleared gym visits: ${i.changes}`); tc+=i.changes; } catch(e){console.error(`Err clear gym:`,e); throw e;} console.log(`[Admin clear] TX finished. Rows (approx): ${tc}`); })();
                 try { const cpR = this.db.db.pragma('wal_checkpoint(FULL)'); console.log(`[Admin clear] Checkpoint OK:`, cpR); } catch (cpE) { console.error(`[Admin clear] Checkpoint Err:`, cpE); interaction.followUp({ content: '⚠️ Warn: Checkpoint fail, reads stale.', flags: [MessageFlags.Ephemeral] }).catch(()=>{}); } return interaction.editReply({ content: `✅ All data for <@${targetUser.id}> deleted.` });
             } catch (err) { console.error(`[Admin clear] Error:`, err); return interaction.editReply({ content: `❌ Error clearing data. Check logs.` }); }
         }
-        if (sub === 'show_table') { const tN=options.getString('table_name',true); const aT=['points','points_log','cooldowns','buddies','achievements','protein_log','reminders']; if (!aT.includes(tN)) { return interaction.editReply({content:'❌ Invalid table.', flags:[MessageFlags.Ephemeral]}); } try { let oB=''; if(['points_log','protein_log','reminders'].includes(tN)) oB='ORDER BY id DESC'; else if (tN==='points') oB='ORDER BY total DESC'; const rows=this.db.db.prepare(`SELECT * FROM ${tN} ${oB} LIMIT 30`).all(); if(rows.length===0) { return interaction.editReply({content:`✅ Table \`${tN}\` empty.`, flags:[MessageFlags.Ephemeral]}); } const data=JSON.stringify(rows,null,2); if(Buffer.byteLength(data,'utf8') > 20*1024*1024) { return interaction.editReply({content:`❌ Data > 20MB.`, flags:[MessageFlags.Ephemeral]}); } const att=new AttachmentBuilder(Buffer.from(data), {name:`${tN}_dump.json`}); return interaction.editReply({content:`✅ Top/last 30 from \`${tN}\`:`, files:[att], flags:[MessageFlags.Ephemeral]}); } catch (err) { console.error(`Err show table ${tN}:`, err); return interaction.editReply({content:`❌ Error fetching. Check logs.`, flags:[MessageFlags.Ephemeral]}); } }
+        if (sub === 'show_table') { const tN=options.getString('table_name',true); const aT=['points','points_log','cooldowns','buddies','achievements','protein_log','reminders','gym_visits']; if (!aT.includes(tN)) { return interaction.editReply({content:'❌Invalid table.', flags:[MessageFlags.Ephemeral]}); } try { let oB=''; if(['points_log','protein_log','reminders'].includes(tN)) oB='ORDER BY id DESC'; else if (tN==='points') oB='ORDER BY total DESC'; else if (tN==='gym_visits') oB='ORDER BY visit_date DESC'; const rows=this.db.db.prepare(`SELECT * FROM ${tN} ${oB} LIMIT 30`).all(); if(rows.length===0) { return interaction.editReply({content:`✅ Table \`${tN}\` empty.`, flags:[MessageFlags.Ephemeral]}); } const data=JSON.stringify(rows,null,2); if(Buffer.byteLength(data,'utf8') > 20*1024*1024) { return interaction.editReply({content:`❌ Data > 20MB.`, flags:[MessageFlags.Ephemeral]}); } const att=new AttachmentBuilder(Buffer.from(data), {name:`${tN}_dump.json`}); return interaction.editReply({content:`✅ Top/last 30 from \`${tN}\`:`, files:[att], flags:[MessageFlags.Ephemeral]}); } catch (err) { console.error(`Err show table ${tN}:`, err); return interaction.editReply({content:`❌ Error fetching. Check logs.`, flags:[MessageFlags.Ephemeral]}); } }
         if (sub === 'download_all_tables') { return this.handleDownloadAllTables(interaction); }
         if (!targetUser && ['award', 'deduct', 'add_protein', 'deduct_protein'].includes(sub)) { return interaction.editReply({ content: `User required for '${sub}'.`, flags: [MessageFlags.Ephemeral] }); }
         if (sub === 'award' || sub === 'deduct') { 
@@ -658,7 +949,7 @@ class CommandHandler {
         if (confirmName !== guild.name) { return interaction.editReply({ content: `❌ Reset cancelled. Type server name \`${guild.name}\` to confirm.`, flags: [MessageFlags.Ephemeral] }); }
         try { console.log(`[Admin resetpoints] Starting FULL RESET for guild ${guild.id} (${guild.name}) by ${interaction.user.tag}`);
             this.db.db.transaction((guildId) => {
-                const tables = ['Points', 'Log', 'Cooldowns', 'Achievements', 'Buddies', 'Protein', 'Reminders']; let tc = 0;
+                const tables = ['Points', 'Log', 'Cooldowns', 'Achievements', 'Buddies', 'Protein', 'Reminders', 'GymVisits']; let tc = 0;
                 tables.forEach(t => { try { const s = this.db.stmts[`resetGuild${t}`]; if (s) { const i = s.run(guildId); console.log(`Reset ${t}: ${i.changes}`); tc += i.changes; } else { console.warn(`Missing reset statement for ${t}`);} } catch (e) { console.error(`Error resetting ${t}:`, e); throw e; } });
                  console.log(`[Admin resetpoints] TX finished. Rows (approx): ${tc}`);
             })(guild.id);
@@ -707,7 +998,7 @@ async function main() {
     if (!CONFIG.token || !CONFIG.appId) { console.error('[Startup Error] Missing DISCORD_TOKEN or APPLICATION_ID env vars!'); process.exit(1); }
     let database; try { console.log("[Startup] Initializing database..."); database = new PointsDatabase(CONFIG.dbFile); } catch (e) { console.error("❌ [Startup FATAL] Failed to initialize Database class:", e); process.exit(1); }
     console.log("[Startup] Starting initial data reconciliation..."); reconcileTotals(database.db); console.log("[Startup] Finished reconcileTotals function call.");
-    try { console.log("[Startup] Attempting WAL checkpoint..."); const checkpointResult = database.db.pragma('wal_checkpoint(FULL)'); console.log("[Startup] WAL Checkpoint Result:", checkpointResult); if (checkpointResult?.[0]?.checkpointed > -1) { console.log(`✅ [Startup] Database checkpoint successful (${checkpointResult[0].checkpointed} pages).`); } else { console.warn("⚠️ [Startup] DB checkpoint command executed but result unexpected:",checkpointResult); } } catch (e) { console.error("❌ [Startup Error] Database checkpoint failed:", e); }
+    try { console.log("[Startup] Attempting WAL checkpoint..."); const checkpointResult = database.db.pragma('wal_checkpoint(FULL)'); console.log("[Startup] WAL Checkpoint Result:", checkpointResult); if (checkpointResult?.[0]?.checkpointed > -1) { console.log(`✅ [Startup] Database checkpoint successful (${checkpointResult[0].checkpointed} pages).`); } else { console.warn("⚠️ [Startup] DB checkpoint command executed but result unexpected:", checkpointResult); } } catch (e) { console.error("❌ [Startup Error] Database checkpoint failed:", e); }
     console.log("[Startup] Initializing CommandHandler..."); const handler = new CommandHandler(database);
     console.log("[Startup] Initializing REST client and registering commands..."); const rest = new REST({ version: '10' }).setToken(CONFIG.token);
     try { const route = CONFIG.devGuildId ? Routes.applicationGuildCommands(CONFIG.appId, CONFIG.devGuildId) : Routes.applicationCommands(CONFIG.appId); await rest.put(route, { body: buildCommands() }); console.log('✅ [Startup] Registered application commands.'); }
@@ -723,11 +1014,12 @@ async function main() {
 
         let initialReplySuccessful = false;
         try {
-            let shouldBeEphemeral = ['buddy', 'nudge', 'remind', 'admin', 'myscore', 'recalculate', 'db_download'].includes(interaction.commandName);
+            let shouldBeEphemeral = ['buddy', 'nudge', 'remind', 'admin', 'myscore', 'recalculate', 'db_download', 'gymstats', 'commands'].includes(interaction.commandName);
             if (interaction.commandName === 'admin' && ['show_table', 'download_all_tables', 'resetpoints', 'clear_user_data', 'export_user_log'].includes(interaction.options.getSubcommand())) shouldBeEphemeral = true;
             if (interaction.commandName === 'buddy' && !interaction.options.getUser('user')) shouldBeEphemeral = true;
             if (interaction.commandName === 'protein' && interaction.options.getSubcommand() === 'total') shouldBeEphemeral = true;
             if (interaction.commandName === 'myscore' && interaction.options.getUser('user')) shouldBeEphemeral = false;
+            if (interaction.commandName === 'gymstats' && interaction.options.getUser('user')) shouldBeEphemeral = false;
             if (interaction.commandName.startsWith('leaderboard')) shouldBeEphemeral = false;
 
             await interaction.reply({ content: '🔄 Processing...', flags: shouldBeEphemeral ? MessageFlags.Ephemeral : undefined }); initialReplySuccessful = true;
@@ -741,6 +1033,8 @@ async function main() {
                 switch (commandName) {
                     case 'junk': await handler.handleJunk(interaction); break;
                     case 'myscore': await handler.handleMyScore(interaction); break;
+                    case 'gymstats': await handler.handleGymStats(interaction); break;
+                    case 'commands': await handler.handleCommands(interaction); break;
                     case 'leaderboard': await handler.handleLeaderboard(interaction); break;
                     case 'leaderboard_period': await handler.handleLeaderboardPeriod(interaction); break;
                     case 'buddy': await handler.handleBuddy(interaction); break;
@@ -804,3 +1098,49 @@ async function main() {
 }
 
 main().catch(err => { console.error('❌ [FATAL ERROR] Uncaught error in main function:', err); process.exit(1); });
+```
+
+---
+
+## ✅ **COMPLETE VERSION - ALL FEATURES ADDED!**
+
+### 🆕 **What's New:**
+
+1. **✅ Zumba** - 2.5 points (12-hour cooldown)
+2. **✅ Pilates** - 2.5 points (12-hour cooldown)
+3. **✅ Cloth Drying** - 0.5 points (1-hour cooldown)
+4. **✅ Gym Updated** - 3.5 points (was 2)
+5. **✅ Home Exercise Variants:**
+   - `home-squat` - 0.015 pts/rep
+   - `home-dumbbell` - 0.0015 pts/rep
+   - `home-barbell` - 0.0015 pts/rep
+   - `home-kettlebell` - 0.15 pts/rep
+
+6. **✅ Gym Tracking:**
+   - Automatically tracks gym visits by date
+   - `/gymstats` command shows total gym days and recent visits
+   - Displays gym days count in `/myscore`
+
+7. **✅ `/commands` Command:**
+   - Lists ALL commands with points
+   - Shows exercise subcommands
+   - Shows distance commands
+   - Beautiful organized embed
+
+---
+
+### 🎮 **New Commands:**
+```
+/zumba - Log zumba class (+2.5 pts)
+/pilates - Log pilates (+2.5 pts)
+/clothdrying - Log clothes drying (+0.5 pts)
+/gymstats - View your gym visit history
+/commands - List all commands and points
+```
+
+### 🏋️ **Exercise Commands Updated:**
+```
+/exercise home-squat reps:20
+/exercise home-dumbbell reps:10 sets:3
+/exercise home-barbell reps:8 sets:4
+/exercise home-kettlebell reps:15
